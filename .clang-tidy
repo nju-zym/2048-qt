@@ -1,0 +1,115 @@
+---
+# Checks 字段用于指定需要运行的检查项，支持通配符和前缀 - 用于排除特定检查
+Checks: >
+  clang-diagnostic-*,               # 启用 clang 自身的警告检查
+  clang-analyzer-*,                 # 启用 clang 静态分析检查
+  *,                               # 启用所有默认检查
+  -*objc*,                        # 禁用所有与 Objective-C 相关的检查
+  -abseil*,                       # 禁用 abseil 相关检查
+  -altera*,                       # 禁用 altera 检查
+  -boost-use-ranges,              # 禁用 boost-use-ranges 检查
+  -bugprone-easily-swappable-parameters,   # 禁用容易交换参数的 bugprone 检查
+  -bugprone-narrowing-conversions,          # 禁用窄化转换检查
+  -cert-dcl21-cpp,                          # 禁用 CERT DCL21 C++ 检查
+  -cert-err58-cpp,                          # 禁用 CERT ERR58 C++ 检查
+  -cppcoreguidelines-narrowing-conversions,  # 禁用 C++ Core Guidelines 窄化转换检查
+  -cppcoreguidelines-pro-bounds-constant-array-index,    # 禁用数组索引越界常量检查
+  -fuchsia*,                                # 禁用 Fuchsia 项目相关检查
+  -google-build-using-namespace,            # 禁用 Google 的 using namespace 检查
+  -google-readability-todo,                 # 禁用 Google TODO 注释检查
+  -llvm-include-order,                      # 禁用 LLVM 的 include 顺序检查
+  -llvm-qualified-auto,                     # 禁用 LLVM 的 auto 限定检查
+  -llvmlib*,                                # 禁用与 llvmlib 相关的检查
+  -misc-non-private-member-variables-in-classes,   # 禁用类中非私有成员变量检查
+  -misc-use-internal-linkage,                      # 禁用内部链接检查
+  -modernize-pass-by-value,                        # 禁用现代化传值检查
+  -modernize-use-designated-initializers,          # 禁用指定初始化器现代化检查
+  -modernize-use-trailing-return-type,             # 禁用尾置返回类型现代化检查
+  -performance-enum-size,                          # 禁用枚举大小性能检查
+  -performance-unnecessary-value-param,           # 禁用不必要的值传参性能检查
+  -readability-qualified-auto,                     # 禁用 qualified auto 可读性检查
+  -readability-static-accessed-through-instance,   # 禁用通过实例访问静态成员的可读性检查
+  -zircon*,                                      # 禁用 Zircon 相关检查
+
+# CheckOptions 字段用于为特定检查提供额外配置选项
+CheckOptions:
+  modernize-use-ranges.UseReversePip: true # 启用 ranges 中使用反向管道语法
+  readability-identifier-length.IgnoredVariableNames: n|ch|_|id|to|t|u|i|j|k|op # 对变量命名长度检查时忽略此正则匹配的名称
+  readability-identifier-length.IgnoredParameterNames: n|ch|_|id|to|t|u|i|j|k|op # 对参数命名长度检查时忽略此正则匹配的名称
+  # 以下选项用于强制使用 Stroustrup 风格的命名，可以根据需要取消注释启用
+  # readability-identifier-naming.AbstractClassCase: Leading_upper_snake_case  # 抽象类命名采用大写蛇形风格
+  # readability-identifier-naming.AggressiveDependentMemberLookup: false         # 关闭依赖成员查找的激进模式
+  # readability-identifier-naming.CheckAnonFieldInParent: true                    # 检查匿名字段在父结构中的命名
+  # readability-identifier-naming.ClassCase: Leading_upper_snake_case              # 类名采用大写蛇形风格
+  # readability-identifier-naming.ClassIgnoredRegexp: "[a-z_]+_type|pointer|(const_)?reference|(const_)?iterator|iterator_(category|concept)"  # 忽略特定模式的类名检查
+  # readability-identifier-naming.ClassConstantCase: lower_case         # 类常量采用小写风格
+  # readability-identifier-naming.ClassMemberCase: lower_case           # 类成员变量采用小写风格
+  # readability-identifier-naming.ClassMethodCase: lower_case           # 类方法采用小写风格
+  # readability-identifier-naming.ConceptCase: lower_case               # 概念名采用小写风格
+  # readability-identifier-naming.ConstantCase: lower_case              # 常量采用小写风格
+  # readability-identifier-naming.ConstantMemberCase: lower_case        # 常量成员采用小写风格
+  # readability-identifier-naming.ConstantParameterCase: lower_case       # 常量参数采用小写风格
+  # readability-identifier-naming.ConstantPointerParameterCase: lower_case  # 常量指针参数采用小写风格
+  # readability-identifier-naming.ConstexprFunctionCase: lower_case       # constexpr 函数采用小写风格
+  # readability-identifier-naming.ConstexprMethodCase: lower_case         # constexpr 方法采用小写风格
+  # readability-identifier-naming.ConstexprVariableCase: lower_case       # constexpr 变量采用小写风格
+  # readability-identifier-naming.EnumCase: Leading_upper_snake_case      # 枚举类型采用大写蛇形风格
+  # readability-identifier-naming.EnumConstantCase: lower_case          # 枚举常量采用小写风格
+  # readability-identifier-naming.FunctionCase: lower_case              # 函数名采用小写风格
+  # readability-identifier-naming.GetConfigPerFile: true                # 每个文件可使用独立配置文件
+  # readability-identifier-naming.GlobalConstantCase: lower_case        # 全局常量采用小写风格
+  # readability-identifier-naming.GlobalConstantPointerCase: lower_case   # 全局常量指针采用小写风格
+  # readability-identifier-naming.GlobalFunctionCase: lower_case        # 全局函数采用小写风格
+  # readability-identifier-naming.GlobalPointerCase: lower_case         # 全局指针采用小写风格
+  # readability-identifier-naming.GlobalVariableCase: lower_case        # 全局变量采用小写风格
+  # readability-identifier-naming.IgnoreMainLikeFunctions: false        # 不忽略类似 main 的函数
+  # readability-identifier-naming.InlineNamespaceCase: lower_case       # 内联命名空间采用小写风格
+  # readability-identifier-naming.LocalConstantCase: lower_case         # 局部常量采用小写风格
+  # readability-identifier-naming.LocalConstantPointerCase: lower_case    # 局部常量指针采用小写风格
+  # readability-identifier-naming.LocalPointerCase: lower_case          # 局部指针采用小写风格
+  # readability-identifier-naming.LocalVariableCase: lower_case         # 局部变量采用小写风格
+  # readability-identifier-naming.MacroDefinitionCase: UPPER_CASE       # 宏定义采用大写风格
+  # readability-identifier-naming.MemberCase: lower_case                # 成员变量采用小写风格
+  # readability-identifier-naming.MethodCase: lower_case                # 方法采用小写风格
+  # readability-identifier-naming.NamespaceCase: lower_case             # 命名空间采用小写风格
+  # readability-identifier-naming.ParameterCase: lower_case             # 参数采用小写风格
+  # readability-identifier-naming.ParameterPackCase: lower_case         # 参数包采用小写风格
+  # readability-identifier-naming.PointerParameterCase: lower_case         # 指针参数采用小写风格
+  # readability-identifier-naming.PrivateMemberCase: lower_case         # 私有成员采用小写风格
+  # readability-identifier-naming.PrivateMemberSuffix: _               # 私有成员后缀为 _
+  # readability-identifier-naming.PrivateMethodCase: lower_case         # 私有方法采用小写风格
+  # readability-identifier-naming.ProtectedMemberCase: lower_case       # 受保护成员采用小写风格
+  # readability-identifier-naming.ProtectedMethodCase: lower_case       # 受保护方法采用小写风格
+  # readability-identifier-naming.PublicMemberCase: lower_case          # 公有成员采用小写风格
+  # readability-identifier-naming.PublicMethodCase: lower_case          # 公有方法采用小写风格
+  # readability-identifier-naming.ScopedEnumConstantCase: lower_case      # 作用域枚举常量采用小写风格
+  # readability-identifier-naming.StaticConstantCase: lower_case        # 静态常量采用小写风格
+  # readability-identifier-naming.StaticVariableCase: lower_case          # 静态变量采用小写风格
+  # readability-identifier-naming.StructCase: Leading_upper_snake_case    # 结构体采用大写蛇形风格
+  # readability-identifier-naming.StructIgnoredRegexp: "[a-z_]+_type|pointer|(const_)?reference|(const_)?iterator|iterator_(category|concept)"  # 忽略符合该正则表达式的结构体命名检查
+  # readability-identifier-naming.TemplateParameterCase: Leading_upper_snake_case   # 模板参数采用大写蛇形风格
+  # readability-identifier-naming.TemplateTemplateParameterCase: Leading_upper_snake_case  # 模板模板参数采用大写蛇形风格
+  # readability-identifier-naming.TypeAliasCase: Leading_upper_snake_case   # 类型别名采用大写蛇形风格
+  # readability-identifier-naming.TypeAliasIgnoredRegexp: "[a-z_]+_type|pointer|(const_)?reference|(const_)?iterator|iterator_(category|concept)"  # 忽略符合该正则的类型别名命名检查
+  # readability-identifier-naming.TypedefCase: Leading_upper_snake_case     # typedef 类型采用大写蛇形风格
+  # readability-identifier-naming.TypedefIgnoredRegexp: "[a-z_]+_type|pointer|(const_)?reference|(const_)?iterator|iterator_(category|concept)"  # 忽略符合该正则的 typedef 命名检查
+  # readability-identifier-naming.TypeTemplateParameterCase: Leading_upper_snake_case  # 类型模板参数采用大写蛇形风格
+  # readability-identifier-naming.UnionCase: Leading_upper_snake_case       # 联合体采用大写蛇形风格
+  # readability-identifier-naming.ValueTemplateParameterCase: Leading_upper_snake_case   # 值模板参数采用大写蛇形风格
+  # readability-identifier-naming.VariableCase: lower_case                # 变量采用小写风格
+  # readability-identifier-naming.VirtualMethodCase: lower_case           # 虚方法采用小写风格
+
+# WarningsAsErrors 字段用于将警告当作错误，这里空字符串表示不将所有警告视为错误
+WarningsAsErrors: ""
+
+# HeaderFilterRegex 用于指定头文件匹配的正则表达式，只有匹配的头文件会被检查；空字符串表示不限制头文件路径
+HeaderFilterRegex: ""
+
+# UseColor 配置是否在终端输出中使用颜色显示
+UseColor: true
+
+# FormatStyle 指定代码格式化风格，none 表示不自动格式化
+FormatStyle: none
+
+# User 用于标识配置的用户名称
+User: user
