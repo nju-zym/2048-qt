@@ -571,6 +571,8 @@ void MainWindow::showWinMessage() {
 
     if (msgBox.exec() == QMessageBox::No) {
         startNewGame();
+    } else {
+        updateStatus("Keep going to get a higher score!");
     }
 }
 
