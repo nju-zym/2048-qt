@@ -10,6 +10,7 @@
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent), ui(new Ui::MainWindow), board(4, QVector<int>(4, 0)), score(0), bestScore(0) {
     ui->setupUi(this);
+    setFocusPolicy(Qt::StrongFocus);  // 添加这行代码
     setupBoard();
     initializeTiles();  // 确保首先初始化标签
     startNewGame();
