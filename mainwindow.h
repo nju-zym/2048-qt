@@ -38,7 +38,7 @@ class MainWindow : public QMainWindow {
     QVector<QVector<QLabel*>> tileLabels;
     int score;
     int bestScore;
-    QVector<QVector<QVector<int>>> history;  // 用于撤销操作
+    QVector<QPair<QVector<QVector<int>>, int>> history;  // 用于撤销操作，存储棋盘状态和分数
 
     // 初始化函数
     void setupBoard();

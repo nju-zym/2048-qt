@@ -111,12 +111,14 @@ void MainWindow::on_undoButton_clicked() {
     }
 
     // 恢复到上一个状态
-    QVector<QVector<int>> lastBoard = history.last();
+    QPair<QVector<QVector<int>>, int> lastState = history.last();
+    QVector<QVector<int>> lastBoard             = lastState.first;
+    int lastScore                               = lastState.second;
     history.pop_back();
 
-    // 如果有多个历史记录，可以继续恢复分数
-    // 这里简化处理，只恢复棋盘状态
+    // 恢复棋盘状态和分数
     board = lastBoard;
+    updateScore(lastScore);  // 恢复分数
 
     // 更新UI
     for (int i = 0; i < 4; ++i) {
@@ -324,7 +326,7 @@ bool MainWindow::moveTiles(int direction) {
 
     // 如果有变化，保存历史记录并更新UI
     if (changed) {
-        history.append(previousBoard);
+        history.append(qMakePair(previousBoard, score));  // 保存当前棋盘状态和分数
 
         // 更新分数
         updateScore(score + scoreGained);
