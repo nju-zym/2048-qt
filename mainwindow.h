@@ -39,6 +39,8 @@ class MainWindow : public QMainWindow {
     int score;
     int bestScore;
     QVector<QPair<QVector<QVector<int>>, int>> history;  // 用于撤销操作，存储棋盘状态和分数
+    bool animationInProgress;                            // 标记动画是否正在进行
+    int pendingAnimations;                               // 跟踪当前正在进行的动画数量
 
     // 初始化函数
     void setupBoard();
@@ -47,7 +49,7 @@ class MainWindow : public QMainWindow {
 
     // 游戏逻辑
     bool moveTiles(int direction);  // 0=up, 1=right, 2=down, 3=left
-    void generateNewTile();
+    void generateNewTile(bool animate = true);
     bool isMoveAvailable() const;
     bool isGameOver() const;
     bool isGameWon() const;

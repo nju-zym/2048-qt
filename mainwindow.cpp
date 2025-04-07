@@ -3,10 +3,12 @@
 #include "ui_mainwindow.h"
 
 #include <QMessageBox>
+#include <QParallelAnimationGroup>
 #include <QPropertyAnimation>
 #include <QRandomGenerator>
 #include <QRect>
 #include <QTime>
+#include <QTimer>
 #include <cmath>
 
 namespace {
@@ -16,7 +18,13 @@ bool winAlertShown = false;
 
 // 构造函数：初始化UI、棋盘和标签，并开始新游戏
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow), board(4, QVector<int>(4, 0)), score(0), bestScore(0) {
+    : QMainWindow(parent),
+      ui(new Ui::MainWindow),
+      board(4, QVector<int>(4, 0)),
+      score(0),
+      bestScore(0),
+      animationInProgress(false),
+      pendingAnimations(0) {
     ui->setupUi(this);  // 初始化UI界面
 
     setFocusPolicy(Qt::StrongFocus);  // 设置焦点策略，确保窗口能响应键盘事件
@@ -103,9 +111,9 @@ void MainWindow::startNewGame() {
 
     history.clear();  // 清除保存的历史状态
 
-    // 随机生成两个初始方块
-    generateNewTile();
-    generateNewTile();
+    // 随机生成两个初始方块，不使用动画效果
+    generateNewTile(false);
+    generateNewTile(false);
 
     // 更新状态消息显示，让玩家知道游戏开始了
     updateStatus("Join the tiles, get to 2048!");
@@ -146,6 +154,11 @@ void MainWindow::on_settingsButton_clicked() {
 
 // keyPressEvent: 重写键盘按下事件函数，响应上下左右键操作
 void MainWindow::keyPressEvent(QKeyEvent* event) {
+    // 如果动画正在进行，忽略键盘输入
+    if (animationInProgress) {
+        return;
+    }
+
     bool moved = false;
 
     // 根据按键的方向值，调用对应的移动函数
@@ -162,19 +175,43 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         case Qt::Key_Left:
             moved = moveTiles(3);  // 3代表向左移动
             break;
+        default:
+            // 其他键不处理
+            return;
     }
 
     // 如果棋盘有变化，则生成新的方块并检测游戏结束或胜利条件
     if (moved) {
-        generateNewTile();  // 随机在空位置生成一个新的数字
+        // 如果有动画正在进行，等待所有动画完成后再生成新方块
+        if (pendingAnimations > 0) {
+            animationInProgress = true;
+            // 使用单次计时器延迟生成新方块，等待所有动画完成
+            QTimer::singleShot(200, this, [this]() {
+                generateNewTile(true);  // 随机在空位置生成一个新的数字，使用动画效果
 
-        if (isGameWon()) {
-            // 达到2048后只弹出一次提示
-            if (!winAlertShown) {
-                showWinMessage();
+                // 检查游戏状态
+                if (isGameWon()) {
+                    // 达到2048后只弹出一次提示
+                    if (!winAlertShown) {
+                        showWinMessage();
+                    }
+                } else if (isGameOver()) {
+                    showGameOverMessage();
+                }
+
+                animationInProgress = false;  // 重置动画状态
+            });
+        } else {
+            generateNewTile(true);  // 随机在空位置生成一个新的数字，使用动画效果
+
+            if (isGameWon()) {
+                // 达到2048后只弹出一次提示
+                if (!winAlertShown) {
+                    showWinMessage();
+                }
+            } else if (isGameOver()) {
+                showGameOverMessage();
             }
-        } else if (isGameOver()) {
-            showGameOverMessage();
         }
     }
 }
@@ -333,10 +370,170 @@ bool MainWindow::moveTiles(int direction) {
         history.append(qMakePair(previousBoard, score));  // 保存本次移动前的棋盘状态和分数
         updateScore(score + scoreGained);                 // 更新总分
 
-        // 更新所有标签的显示
+        // 创建一个数据结构来跟踪每个方块的移动
+        struct TileMove {
+            int fromRow, fromCol;  // 原始位置
+            int toRow, toCol;      // 目标位置
+            bool merged;           // 是否发生合并
+        };
+        QVector<TileMove> tileMoves;
+
+        // 创建一个二维数组来跟踪每个位置的方块是否已经被处理过
+        QVector<QVector<bool>> processed(4, QVector<bool>(4, false));
+
+        // 直接比较移动前后的棋盘状态，找出真正移动的方块
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                // 如果当前位置的值在移动前后不同，说明发生了变化
+                if (board[i][j] != previousBoard[i][j]) {
+                    // 如果当前位置有值，需要找出它是从哪里移动过来的
+                    if (board[i][j] != 0) {
+                        // 检查是否是合并的结果（值是移动前某个位置值的两倍）
+                        bool isMerged = false;
+
+                        // 根据移动方向查找可能的源位置
+                        if (direction == 0) {  // 向上移动，检查下方
+                            for (int row = i + 1; row < 4 && !isMerged; ++row) {
+                                if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
+                                    // 找到了合并源
+                                    TileMove move = {row, j, i, j, true};
+                                    tileMoves.append(move);
+                                    processed[row][j] = true;
+                                    isMerged          = true;
+                                }
+                            }
+
+                            // 如果不是合并，则是简单的移动
+                            if (!isMerged) {
+                                for (int row = i + 1; row < 4; ++row) {
+                                    if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
+                                        // 找到了移动源
+                                        TileMove move = {row, j, i, j, false};
+                                        tileMoves.append(move);
+                                        processed[row][j] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (direction == 1) {  // 向右移动，检查左方
+                            for (int col = j - 1; col >= 0 && !isMerged; --col) {
+                                if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
+                                    // 找到了合并源
+                                    TileMove move = {i, col, i, j, true};
+                                    tileMoves.append(move);
+                                    processed[i][col] = true;
+                                    isMerged          = true;
+                                }
+                            }
+
+                            // 如果不是合并，则是简单的移动
+                            if (!isMerged) {
+                                for (int col = j - 1; col >= 0; --col) {
+                                    if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
+                                        // 找到了移动源
+                                        TileMove move = {i, col, i, j, false};
+                                        tileMoves.append(move);
+                                        processed[i][col] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (direction == 2) {  // 向下移动，检查上方
+                            for (int row = i - 1; row >= 0 && !isMerged; --row) {
+                                if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
+                                    // 找到了合并源
+                                    TileMove move = {row, j, i, j, true};
+                                    tileMoves.append(move);
+                                    processed[row][j] = true;
+                                    isMerged          = true;
+                                }
+                            }
+
+                            // 如果不是合并，则是简单的移动
+                            if (!isMerged) {
+                                for (int row = i - 1; row >= 0; --row) {
+                                    if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
+                                        // 找到了移动源
+                                        TileMove move = {row, j, i, j, false};
+                                        tileMoves.append(move);
+                                        processed[row][j] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (direction == 3) {  // 向左移动，检查右方
+                            for (int col = j + 1; col < 4 && !isMerged; ++col) {
+                                if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
+                                    // 找到了合并源
+                                    TileMove move = {i, col, i, j, true};
+                                    tileMoves.append(move);
+                                    processed[i][col] = true;
+                                    isMerged          = true;
+                                }
+                            }
+
+                            // 如果不是合并，则是简单的移动
+                            if (!isMerged) {
+                                for (int col = j + 1; col < 4; ++col) {
+                                    if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
+                                        // 找到了移动源
+                                        TileMove move = {i, col, i, j, false};
+                                        tileMoves.append(move);
+                                        processed[i][col] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 更新所有方块的外观
         for (int i = 0; i < 4; ++i) {
             for (int j = 0; j < 4; ++j) {
                 updateTileAppearance(i, j);
+            }
+        }
+
+        // 执行移动动画
+        for (TileMove const& move : tileMoves) {
+            if (move.fromRow != move.toRow || move.fromCol != move.toCol) {
+                QPoint from = tileLabels[move.fromRow][move.fromCol]->pos();
+                QPoint to   = tileLabels[move.toRow][move.toCol]->pos();
+
+                // 使用源位置的标签创建一个临时标签来执行动画
+                QLabel* tempLabel = new QLabel(ui->gameBoard);
+                tempLabel->setGeometry(from.x(),
+                                       from.y(),
+                                       tileLabels[move.fromRow][move.fromCol]->width(),
+                                       tileLabels[move.fromRow][move.fromCol]->height());
+                tempLabel->setAlignment(Qt::AlignCenter);
+                tempLabel->setText(QString::number(previousBoard[move.fromRow][move.fromCol]));
+                tempLabel->setStyleSheet(getTileStyleSheet(previousBoard[move.fromRow][move.fromCol]));
+                tempLabel->show();
+
+                // 创建移动动画
+                QPropertyAnimation* animation = new QPropertyAnimation(tempLabel, "geometry");
+                animation->setDuration(100);
+                animation->setStartValue(QRect(from.x(), from.y(), tempLabel->width(), tempLabel->height()));
+                animation->setEndValue(QRect(to.x(), to.y(), tempLabel->width(), tempLabel->height()));
+                animation->setEasingCurve(QEasingCurve::OutQuad);
+
+                // 动画结束后删除临时标签
+                connect(animation, &QPropertyAnimation::finished, [tempLabel, this, move]() {
+                    tempLabel->deleteLater();
+                    pendingAnimations--;
+
+                    // 如果发生了合并，添加合并动画
+                    if (move.merged) {
+                        animateTileMerge(tileLabels[move.toRow][move.toCol]);
+                    }
+                });
+
+                pendingAnimations++;
+                animation->start(QPropertyAnimation::DeleteWhenStopped);
             }
         }
     }
@@ -345,7 +542,7 @@ bool MainWindow::moveTiles(int direction) {
 }
 
 // generateNewTile: 随机选择一个空位置，在该位置生成2或4的新方块
-void MainWindow::generateNewTile() {
+void MainWindow::generateNewTile(bool animate) {
     // 确保标签容器已初始化，否则先初始化
     if (tileLabels.isEmpty()) {
         initializeTiles();
@@ -366,6 +563,26 @@ void MainWindow::generateNewTile() {
 
     board[row][col] = newValue;      // 更新棋盘数据
     updateTileAppearance(row, col);  // 更新对应标签的外观
+
+    // 只有在需要动画时才添加动画效果
+    if (animate) {
+        pendingAnimations++;  // 增加正在进行的动画计数
+
+        QLabel* label                 = tileLabels[row][col];
+        QPropertyAnimation* animation = new QPropertyAnimation(label, "geometry", this);
+        animation->setDuration(200);  // 设置动画持续时间为200毫秒
+        QRect rect = label->geometry();
+
+        // 从小到大的动画效果
+        animation->setKeyValueAt(0, QRect(rect.center().x() - 5, rect.center().y() - 5, 10, 10));
+        animation->setKeyValueAt(1, rect);
+        animation->setEasingCurve(QEasingCurve::OutBack);  // 使用弹性效果
+
+        // 动画结束时减少计数
+        connect(animation, &QPropertyAnimation::finished, [this]() { pendingAnimations--; });
+
+        animation->start(QPropertyAnimation::DeleteWhenStopped);
+    }
 }
 
 // updateTileAppearance: 根据棋盘数据更新指定位置标签的样式和显示数字
@@ -393,6 +610,41 @@ void MainWindow::updateTileAppearance(int row, int col) {
 
 // updateScore: 更新当前分数并刷新UI显示，同时更新最佳分数
 void MainWindow::updateScore(int newScore) {
+    // 如果分数增加，添加动画效果
+    if (newScore > score) {
+        // 创建一个临时标签显示分数增加值
+        QLabel* scoreAddLabel = new QLabel(QString("+%1").arg(newScore - score), this);
+        scoreAddLabel->setStyleSheet(
+            "color: #776e65; font-weight: bold; font-size: 18px; background-color: transparent;");
+
+        // 将标签定位在分数显示区域附近
+        QPoint scorePos = ui->scoreValue->mapToParent(QPoint(0, 0));
+        scoreAddLabel->move(scorePos.x() + ui->scoreValue->width() / 2, scorePos.y());
+        scoreAddLabel->show();
+
+        // 创建透明度动画
+        QPropertyAnimation* fadeOut = new QPropertyAnimation(scoreAddLabel, "windowOpacity");
+        fadeOut->setStartValue(1.0);
+        fadeOut->setEndValue(0.0);
+        fadeOut->setDuration(1000);  // 1秒渐隐
+
+        // 创建位置动画，向上浮动
+        QPropertyAnimation* moveUp = new QPropertyAnimation(scoreAddLabel, "pos");
+        moveUp->setStartValue(scoreAddLabel->pos());
+        moveUp->setEndValue(QPoint(scoreAddLabel->pos().x(), scoreAddLabel->pos().y() - 30));
+        moveUp->setDuration(1000);  // 1秒向上浮动
+
+        // 创建动画组并行执行两个动画
+        QParallelAnimationGroup* animGroup = new QParallelAnimationGroup();
+        animGroup->addAnimation(fadeOut);
+        animGroup->addAnimation(moveUp);
+
+        // 动画结束后删除标签
+        connect(animGroup, &QParallelAnimationGroup::finished, [scoreAddLabel]() { scoreAddLabel->deleteLater(); });
+
+        animGroup->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+
     score = newScore;
     ui->scoreValue->setText(QString::number(score));  // 显示当前分数
 
@@ -484,27 +736,41 @@ QString MainWindow::getTileStyleSheet(int value) const {
 
 // animateTileMovement: 为移动的方块添加动画效果
 void MainWindow::animateTileMovement(QLabel* label, QPoint const& from, QPoint const& to) {
+    pendingAnimations++;  // 增加正在进行的动画计数
+
     QPropertyAnimation* animation = new QPropertyAnimation(label, "geometry", this);
     animation->setDuration(100);  // 设置动画持续时间为100毫秒
     animation->setStartValue(QRect(from.x(), from.y(), label->width(), label->height()));
     animation->setEndValue(QRect(to.x(), to.y(), label->width(), label->height()));
     animation->setEasingCurve(QEasingCurve::OutQuad);  // 使用缓出效果，使动画更自然
+
+    // 动画结束时减少计数
+    connect(animation, &QPropertyAnimation::finished, [this]() { pendingAnimations--; });
+
     animation->start(QPropertyAnimation::DeleteWhenStopped);
 }
 
 // animateTileMerge: 为合并操作添加动画，先缩小再恢复原状
 void MainWindow::animateTileMerge(QLabel* label) {
+    pendingAnimations++;  // 增加正在进行的动画计数
+
     QPropertyAnimation* animation = new QPropertyAnimation(label, "geometry", this);
     animation->setDuration(150);  // 动画持续150毫秒
     QRect rect = label->geometry();
     animation->setKeyValueAt(0, rect);  // 初始状态
     // 中间状态：缩小后居中
-    animation->setKeyValueAt(
-        0.5,
-        QRect(rect.x() + rect.width() / 8, rect.y() + rect.height() / 8, rect.width() * 3 / 4, rect.height() * 3 / 4));
+    animation->setKeyValueAt(0.5,
+                             QRect(rect.x() + (rect.width() / 8),
+                                   rect.y() + (rect.height() / 8),
+                                   rect.width() * 3 / 4,
+                                   rect.height() * 3 / 4));
     animation->setKeyValueAt(1, rect);  // 恢复原尺寸
 
     animation->setEasingCurve(QEasingCurve::OutBounce);  // 使用弹跳效果结束动画
+
+    // 动画结束时减少计数
+    connect(animation, &QPropertyAnimation::finished, [this]() { pendingAnimations--; });
+
     animation->start(QPropertyAnimation::DeleteWhenStopped);
 }
 
