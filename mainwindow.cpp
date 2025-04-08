@@ -1,14 +1,26 @@
 #include "mainwindow.h"
 
+#include "auto.h"
 #include "ui_mainwindow.h"
 
+#include <QCheckBox>
+#include <QDialog>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QMessageBox>
 #include <QParallelAnimationGroup>
+#include <QProgressBar>
 #include <QPropertyAnimation>
+#include <QPushButton>
 #include <QRandomGenerator>
 #include <QRect>
+#include <QSpinBox>
+#include <QTextEdit>
 #include <QTime>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <cmath>
 
 namespace {
@@ -24,18 +36,26 @@ MainWindow::MainWindow(QWidget* parent)
       score(0),
       bestScore(0),
       animationInProgress(false),
-      pendingAnimations(0) {
+      pendingAnimations(0),
+      autoPlayTimer(new QTimer(this)),
+      autoPlayActive(false),
+      autoPlayer(new Auto()) {
     ui->setupUi(this);  // 初始化UI界面
 
     setFocusPolicy(Qt::StrongFocus);  // 设置焦点策略，确保窗口能响应键盘事件
     setupBoard();                     // 初始化一个4x4的游戏棋盘，每个元素设为0
     initializeTiles();                // 初始化棋盘上对应的标签，清除旧标签、创建新标签并放到布局中
     startNewGame();                   // 开始一个新的游戏，重置棋盘状态、分数、历史记录并随机生成两个数字
+
+    // 连接自动操作定时器的信号和槽
+    autoPlayTimer->setInterval(300);  // 设置定时器间隔为300毫秒
+    connect(autoPlayTimer, &QTimer::timeout, this, &MainWindow::autoPlayStep);
 }
 
 // 析构函数：清理分配的UI资源
 MainWindow::~MainWindow() {
-    delete ui;  // 释放UI占用资源
+    delete ui;          // 释放UI占用资源
+    delete autoPlayer;  // 释放自动操作类资源
 }
 
 // setupBoard: 初始化棋盘数据，确保创建了一个4x4的矩阵，并将所有值设为0
@@ -867,4 +887,310 @@ QVector<QPair<int, int>> MainWindow::getEmptyTiles() const {
     }
 
     return emptyTiles;
+}
+
+// on_autoPlayButton_clicked: 处理自动操作按钮的点击事件
+void MainWindow::on_autoPlayButton_clicked() {
+    // 切换自动操作状态
+    autoPlayActive = !autoPlayActive;
+
+    // 获取自动操作按钮
+    QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+
+    if (autoPlayActive) {
+        // 开始自动操作
+        if (autoPlayButton) {
+            autoPlayButton->setText("Stop Auto");
+        }
+        autoPlayTimer->start();
+        updateStatus("Auto play started");
+    } else {
+        // 停止自动操作
+        if (autoPlayButton) {
+            autoPlayButton->setText("Auto Play");
+        }
+        autoPlayTimer->stop();
+        updateStatus("Auto play stopped");
+    }
+}
+
+// autoPlayStep: 执行一步自动操作
+void MainWindow::autoPlayStep() {
+    // 如果游戏结束或动画正在进行，不执行操作
+    if (isGameOver() || animationInProgress) {
+        return;
+    }
+
+    // 找出最佳移动方向并执行
+    int bestDirection = findBestMove();
+    if (bestDirection != -1) {
+        bool moved = moveTiles(bestDirection);
+
+        // 如果移动成功，生成新的数字块
+        if (moved) {
+            // 如果有动画正在进行，等待所有动画完成后再生成新方块
+            if (pendingAnimations > 0) {
+                animationInProgress = true;
+                // 使用单次计时器延迟生成新方块，等待所有动画完成
+                QTimer::singleShot(200, this, [this]() {
+                    generateNewTile(true);  // 生成新方块，使用动画效果
+
+                    // 检查游戏状态
+                    if (isGameWon()) {
+                        // 达到2048后只弹出一次提示
+                        if (!winAlertShown) {
+                            showWinMessage();
+                        }
+                    } else if (isGameOver()) {
+                        showGameOverMessage();
+                        // 游戏结束时停止自动操作
+                        autoPlayActive              = false;
+                        QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+                        if (autoPlayButton) {
+                            autoPlayButton->setChecked(false);
+                            autoPlayButton->setText("Auto Play");
+                        }
+                        autoPlayTimer->stop();
+                    }
+
+                    animationInProgress = false;  // 重置动画状态
+                });
+            } else {
+                generateNewTile(true);  // 生成新方块，使用动画效果
+
+                // 检查游戏状态
+                if (isGameWon()) {
+                    // 达到2048后只弹出一次提示
+                    if (!winAlertShown) {
+                        showWinMessage();
+                    }
+                } else if (isGameOver()) {
+                    showGameOverMessage();
+                    // 游戏结束时停止自动操作
+                    autoPlayActive              = false;
+                    QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+                    if (autoPlayButton) {
+                        autoPlayButton->setChecked(false);
+                        autoPlayButton->setText("Auto Play");
+                    }
+                    autoPlayTimer->stop();
+                }
+            }
+        }
+    }
+}
+
+// findBestMove: 找出最佳移动方向
+int MainWindow::findBestMove() {
+    // 使用Auto类的findBestMove方法
+    return autoPlayer->findBestMove(board);
+}
+
+// on_learnButton_clicked: 处理学习按钮的点击事件
+void MainWindow::on_learnButton_clicked() {
+    // 创建训练设置对话框
+    QDialog* settingsDialog = new QDialog(this);
+    settingsDialog->setWindowTitle("AI Training Settings");
+    settingsDialog->setMinimumSize(300, 200);
+    settingsDialog->setWindowFlags(settingsDialog->windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+    // 创建设置控件
+    QLabel* populationLabel     = new QLabel("Population Size:", settingsDialog);
+    QSpinBox* populationSpinBox = new QSpinBox(settingsDialog);
+    populationSpinBox->setRange(10, 200);
+    populationSpinBox->setValue(50);
+    populationSpinBox->setToolTip("Number of parameter sets to evaluate in each generation");
+
+    QLabel* generationsLabel     = new QLabel("Generations:", settingsDialog);
+    QSpinBox* generationsSpinBox = new QSpinBox(settingsDialog);
+    generationsSpinBox->setRange(5, 100);
+    generationsSpinBox->setValue(30);
+    generationsSpinBox->setToolTip("Number of evolutionary generations to run");
+
+    QLabel* simulationsLabel     = new QLabel("Simulations per Set:", settingsDialog);
+    QSpinBox* simulationsSpinBox = new QSpinBox(settingsDialog);
+    simulationsSpinBox->setRange(5, 50);
+    simulationsSpinBox->setValue(15);
+    simulationsSpinBox->setToolTip("Number of game simulations to run for each parameter set");
+
+    QCheckBox* saveParamsCheckBox = new QCheckBox("Save parameters after training", settingsDialog);
+    saveParamsCheckBox->setChecked(true);
+
+    // 创建按钮
+    QPushButton* startButton  = new QPushButton("Start Training", settingsDialog);
+    QPushButton* cancelButton = new QPushButton("Cancel", settingsDialog);
+
+    // 布局
+    QGridLayout* gridLayout = new QGridLayout();
+    gridLayout->addWidget(populationLabel, 0, 0);
+    gridLayout->addWidget(populationSpinBox, 0, 1);
+    gridLayout->addWidget(generationsLabel, 1, 0);
+    gridLayout->addWidget(generationsSpinBox, 1, 1);
+    gridLayout->addWidget(simulationsLabel, 2, 0);
+    gridLayout->addWidget(simulationsSpinBox, 2, 1);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addWidget(cancelButton);
+    buttonLayout->addWidget(startButton);
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(settingsDialog);
+    mainLayout->addLayout(gridLayout);
+    mainLayout->addWidget(saveParamsCheckBox);
+    mainLayout->addLayout(buttonLayout);
+
+    // 连接按钮信号
+    connect(cancelButton, &QPushButton::clicked, settingsDialog, &QDialog::reject);
+    connect(startButton, &QPushButton::clicked, [=]() { settingsDialog->accept(); });
+
+    // 显示设置对话框
+    if (settingsDialog->exec() != QDialog::Accepted) {
+        settingsDialog->deleteLater();
+        return;
+    }
+
+    // 获取设置值
+    int populationSize = populationSpinBox->value();
+    int generations    = generationsSpinBox->value();
+    int simulations    = simulationsSpinBox->value();
+    bool saveParams    = saveParamsCheckBox->isChecked();
+
+    settingsDialog->deleteLater();
+
+    // 创建训练进度对话框
+    QDialog* trainingDialog = new QDialog(this);
+    trainingDialog->setWindowTitle("AI Training Progress");
+    trainingDialog->setMinimumSize(500, 400);
+    trainingDialog->setWindowFlags(trainingDialog->windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+    // 创建进度条和标签
+    QProgressBar* progressBar = new QProgressBar(trainingDialog);
+    progressBar->setRange(0, 100);
+    progressBar->setValue(0);
+    progressBar->setTextVisible(true);
+
+    QLabel* statusLabel     = new QLabel("Initializing training...", trainingDialog);
+    QLabel* generationLabel = new QLabel("Generation: 0/0", trainingDialog);
+    QLabel* bestScoreLabel  = new QLabel("Best Score: 0", trainingDialog);
+
+    // 创建参数显示区域
+    QGroupBox* paramsGroupBox = new QGroupBox("Current Best Parameters", trainingDialog);
+    QGridLayout* paramsLayout = new QGridLayout(paramsGroupBox);
+    QVector<QLabel*> paramLabels;
+    for (int i = 0; i < 5; i++) {
+        QLabel* nameLabel  = new QLabel(QString("Parameter %1:").arg(i + 1));
+        QLabel* valueLabel = new QLabel("0.00");
+        paramLabels.append(valueLabel);
+        paramsLayout->addWidget(nameLabel, i, 0);
+        paramsLayout->addWidget(valueLabel, i, 1);
+    }
+
+    // 创建训练结果显示区域
+    QTextEdit* resultsDisplay = new QTextEdit(trainingDialog);
+    resultsDisplay->setReadOnly(true);
+    resultsDisplay->setPlaceholderText("Training results will appear here...");
+
+    // 创建取消按钮
+    QPushButton* stopButton = new QPushButton("Stop Training", trainingDialog);
+
+    // 布局
+    QVBoxLayout* layout = new QVBoxLayout(trainingDialog);
+    layout->addWidget(statusLabel);
+    layout->addWidget(progressBar);
+    layout->addWidget(generationLabel);
+    layout->addWidget(bestScoreLabel);
+    layout->addWidget(paramsGroupBox);
+    layout->addWidget(resultsDisplay);
+    layout->addWidget(stopButton);
+
+    // 连接取消按钮
+    connect(stopButton, &QPushButton::clicked, trainingDialog, &QDialog::reject);
+
+    // 更新状态显示学习开始
+    updateStatus("Learning optimal strategies...");
+
+    // 禁用学习按钮，防止重复点击
+    QPushButton* learnButton = findChild<QPushButton*>("learnButton");
+    if (learnButton) {
+        learnButton->setEnabled(false);
+    }
+
+    // 显示训练对话框
+    trainingDialog->show();
+
+    // 连接训练进度信号
+    TrainingProgress* trainingProgress = autoPlayer->getTrainingProgress();
+
+    connect(trainingProgress,
+            &TrainingProgress::progressUpdated,
+            [=](int generation, int totalGenerations, int bestScore, QVector<double> const& bestParams) {
+                // 更新进度条
+                int progress = (generation * 100) / totalGenerations;
+                progressBar->setValue(progress);
+
+                // 更新标签
+                statusLabel->setText(QString("Training generation %1 of %2...").arg(generation).arg(totalGenerations));
+                generationLabel->setText(QString("Generation: %1/%2").arg(generation).arg(totalGenerations));
+                bestScoreLabel->setText(QString("Best Score: %1").arg(bestScore));
+
+                // 更新参数显示
+                for (int i = 0; i < bestParams.size() && i < paramLabels.size(); i++) {
+                    paramLabels[i]->setText(QString::number(bestParams[i], 'f', 2));
+                }
+
+                // 添加训练结果到显示区域
+                resultsDisplay->append(QString("Generation %1: Best Score = %2").arg(generation).arg(bestScore));
+            });
+
+    connect(trainingProgress,
+            &TrainingProgress::trainingCompleted,
+            [this, statusLabel, progressBar, resultsDisplay, stopButton, learnButton, saveParams](
+                int finalScore, QVector<double> const& finalParams) {
+                // 更新状态
+                statusLabel->setText("Training completed!");
+                progressBar->setValue(100);
+
+                // 显示最终结果
+                resultsDisplay->append("\nTraining completed!");
+                resultsDisplay->append(QString("Final Best Score: %1").arg(finalScore));
+                resultsDisplay->append("\nFinal Parameters:");
+                for (int i = 0; i < finalParams.size(); i++) {
+                    resultsDisplay->append(QString("Parameter %1: %2").arg(i + 1).arg(finalParams[i], 0, 'f', 2));
+                }
+
+                // 保存参数
+                if (saveParams) {
+                    if (autoPlayer->saveParameters()) {
+                        resultsDisplay->append("\nParameters saved successfully.");
+                    } else {
+                        resultsDisplay->append("\nFailed to save parameters.");
+                    }
+                }
+
+                // 更改按钮文本
+                stopButton->setText("Close");
+
+                // 更新状态
+                updateStatus("Learning completed! Auto play will now use learned strategies.");
+
+                // 重新启用学习按钮
+                if (learnButton) {
+                    learnButton->setEnabled(true);
+                }
+            });
+
+    // 连接对话框关闭信号
+    connect(trainingDialog, &QDialog::finished, [=]() {
+        // 确保学习按钮被重新启用
+        if (learnButton) {
+            learnButton->setEnabled(true);
+        }
+
+        trainingDialog->deleteLater();
+    });
+
+    // 使用QTimer延迟执行学习过程，以便 UI 能够更新
+    QTimer::singleShot(100, this, [this, populationSize, generations, simulations]() {
+        // 调用Auto类的学习方法
+        autoPlayer->learnParameters(populationSize, generations, simulations);
+    });
 }
