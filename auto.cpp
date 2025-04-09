@@ -389,13 +389,16 @@ Auto::~Auto() {
         trainingActive.store(false);
 
         // 等待线程池完成所有任务
-        QThreadPool::globalInstance()->waitForDone();
-        qDebug() << "All training tasks completed";
+        QThreadPool::globalInstance()->waitForDone(5000);  // 添加超时时间防止死锁
+        qDebug() << "All training tasks completed or timed out";
     }
 
     // 清除缓存
     expectimaxCache.clear();
     bitboardCache.clear();
+
+    // 释放任何其他资源
+    QThreadPool::globalInstance()->clear();
 
     qDebug() << "Auto object destroyed successfully";
 }
@@ -2228,6 +2231,10 @@ void Auto::learnParameters(int populationSize, int generations, int simulations)
         return;
     }
 
+    // 清除缓存，确保内存干净
+    clearExpectimaxCache();
+    bitboardCache.clear();
+
     // 设置训练状态
     trainingActive.store(true);
 
@@ -2241,6 +2248,13 @@ void Auto::learnParameters(int populationSize, int generations, int simulations)
     connect(worker, &TrainingWorker::finished, trainingThread, &QThread::quit);
     connect(worker, &TrainingWorker::finished, worker, &QObject::deleteLater);
     connect(trainingThread, &QThread::finished, trainingThread, &QObject::deleteLater);
+
+    // 添加错误处理
+    connect(trainingThread, &QThread::finished, [this]() {
+        // 确保训练状态被重置，即使发生错误
+        trainingActive.store(false);
+        qDebug() << "Training thread finished and cleaned up";
+    });
 
     // 启动训练线程
     trainingThread->start();

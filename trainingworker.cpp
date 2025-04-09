@@ -425,6 +425,9 @@ void TrainingWorker::doTraining() {
             // 发送训练完成信号
             emit autoPlayer->trainingProgress.trainingCompleted(finalBestScore, finalBestParams);
 
+            // 确保所有资源都已释放
+            QThreadPool::globalInstance()->waitForDone();
+
             // 在主线程中发出完成信号，确保安全退出
             QMetaObject::invokeMethod(this, "emitFinished", Qt::QueuedConnection);
         },
