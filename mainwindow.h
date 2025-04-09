@@ -3,14 +3,20 @@
 
 #include "auto.h"
 
+#include <QFuture>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMutex>
 #include <QPair>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QThread>
 #include <QTimer>
 #include <QVector>
+#include <QWaitCondition>
+
+#include <QtConcurrent/QtConcurrent>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -34,7 +40,10 @@ class MainWindow : public QMainWindow {
     void on_settingsButton_clicked();
     void on_autoPlayButton_clicked();
     void on_learnButton_clicked();
+    void on_resetAIButton_clicked();
     void autoPlayStep();
+    void onAiCalculationFinished();
+    void onAiCalculationTimeout();
 
    private:
     Ui::MainWindow* ui;
@@ -53,6 +62,13 @@ class MainWindow : public QMainWindow {
     bool autoPlayActive;    // 标记自动操作是否激活
     Auto* autoPlayer;       // 自动操作类实例
 
+    // AI线程相关
+    QFuture<int> aiFuture;   // 用于异步计算最佳移动
+    bool aiCalculating;      // 标记AI是否正在计算
+    QMutex aiMutex;          // 用于保护AI计算状态
+    int aiCalculatedMove;    // 存储计算出的最佳移动
+    QTimer* aiTimeoutTimer;  // 超时定时器，防止AI计算时间过长
+
     // 初始化函数
     void setupBoard();
     void initializeTiles();
@@ -68,7 +84,8 @@ class MainWindow : public QMainWindow {
     QVector<QPair<int, int>> getEmptyTiles() const;  // 获取所有空格子
 
     // 自动操作相关
-    int findBestMove();  // 找出最佳移动方向
+    int findBestMove();         // 找出最佳移动方向
+    void startAiCalculation();  // 开始异步AI计算
 
     // UI更新
     void updateTileAppearance(int row, int col);

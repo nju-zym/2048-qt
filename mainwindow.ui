@@ -387,6 +387,34 @@ QPushButton:hover {
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="resetAIButton">
+         <property name="minimumSize">
+          <size>
+           <width>100</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>12</pointsize>
+          </font>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton {
+    background-color: #e74c3c;
+    color: white;
+    border-radius: 6px;
+}
+QPushButton:hover {
+    background-color: #c0392b;
+}</string>
+         </property>
+         <property name="text">
+          <string>Reset AI</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
     </item>

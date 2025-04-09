@@ -3,7 +3,10 @@
 #include "auto.h"
 #include "ui_mainwindow.h"
 
+// Bitboard implementation is included directly in auto.cpp
+
 #include <QCheckBox>
+#include <QDebug>
 #include <QDialog>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -39,7 +42,10 @@ MainWindow::MainWindow(QWidget* parent)
       pendingAnimations(0),
       autoPlayTimer(new QTimer(this)),
       autoPlayActive(false),
-      autoPlayer(new Auto()) {
+      autoPlayer(new Auto()),
+      aiCalculating(false),
+      aiCalculatedMove(-1),
+      aiTimeoutTimer(new QTimer(this)) {
     ui->setupUi(this);  // 初始化UI界面
 
     setFocusPolicy(Qt::StrongFocus);  // 设置焦点策略，确保窗口能响应键盘事件
@@ -50,6 +56,11 @@ MainWindow::MainWindow(QWidget* parent)
     // 连接自动操作定时器的信号和槽
     autoPlayTimer->setInterval(300);  // 设置定时器间隔为300毫秒
     connect(autoPlayTimer, &QTimer::timeout, this, &MainWindow::autoPlayStep);
+
+    // 设置AI超时定时器
+    aiTimeoutTimer->setInterval(2000);    // 2秒超时
+    aiTimeoutTimer->setSingleShot(true);  // 单次触发
+    connect(aiTimeoutTimer, &QTimer::timeout, this, &MainWindow::onAiCalculationTimeout);
 }
 
 // 析构函数：清理分配的UI资源
@@ -113,6 +124,9 @@ void MainWindow::initializeTiles() {
 void MainWindow::startNewGame() {
     setupBoard();           // 重新初始化棋盘数据
     winAlertShown = false;  // 重置胜利提示标识
+
+    // 清除AI缓存，提高性能
+    autoPlayer->clearExpectimaxCache();
 
     // 如果标签未初始化，则先调用initializeTiles()初始化
     if (tileLabels.isEmpty()) {
@@ -889,6 +903,36 @@ QVector<QPair<int, int>> MainWindow::getEmptyTiles() const {
     return emptyTiles;
 }
 
+// isMoveAvailable: 检查是否有可用的移动
+bool MainWindow::isMoveAvailable() const {
+    // 如果有空格，则可以移动
+    if (!getEmptyTiles().isEmpty()) {
+        return true;
+    }
+
+    // 如果没有空格，检查相邻的方块是否有相同的值
+    // 检查水平方向
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if (board[i][j] == board[i][j + 1]) {
+                return true;
+            }
+        }
+    }
+
+    // 检查垂直方向
+    for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 3; ++i) {
+            if (board[i][j] == board[i + 1][j]) {
+                return true;
+            }
+        }
+    }
+
+    // 没有可用的移动
+    return false;
+}
+
 // on_autoPlayButton_clicked: 处理自动操作按钮的点击事件
 void MainWindow::on_autoPlayButton_clicked() {
     // 切换自动操作状态
@@ -902,46 +946,113 @@ void MainWindow::on_autoPlayButton_clicked() {
         if (autoPlayButton) {
             autoPlayButton->setText("Stop Auto");
         }
+
+        // 开始异步计算最佳移动
+        startAiCalculation();
+
+        // 启动定时器
         autoPlayTimer->start();
+
         updateStatus("Auto play started");
     } else {
         // 停止自动操作
         if (autoPlayButton) {
             autoPlayButton->setText("Auto Play");
         }
+
+        // 停止定时器
         autoPlayTimer->stop();
+
+        // 停止超时定时器
+        aiTimeoutTimer->stop();
+
+        // 重置计算状态
+        QMutexLocker locker(&aiMutex);
+        aiCalculating = false;
+
         updateStatus("Auto play stopped");
     }
 }
 
 // autoPlayStep: 执行一步自动操作
 void MainWindow::autoPlayStep() {
-    // 如果游戏结束或动画正在进行，不执行操作
-    if (isGameOver() || animationInProgress) {
+    // 检查是否有可用的移动
+    if (!isMoveAvailable()) {
+        qDebug() << "No moves available, stopping auto play";
+        autoPlayActive              = false;
+        QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+        if (autoPlayButton) {
+            autoPlayButton->setChecked(false);
+            autoPlayButton->setText("Auto Play");
+        }
+        autoPlayTimer->stop();
+        showGameOverMessage();
         return;
     }
 
-    // 找出最佳移动方向并执行
+    // 如果游戏结束或动画正在进行，不执行操作
+    if (isGameOver() || animationInProgress) {
+        qDebug() << "Game over or animation in progress, skipping auto play step";
+        return;
+    }
+
+    // 检查是否正在计算中
+    QMutexLocker locker(&aiMutex);
+    if (aiCalculating) {
+        // 如果正在计算，不重复启动新的计算
+        qDebug() << "AI calculation in progress, skipping auto play step";
+        return;
+    }
+    locker.unlock();
+
+    // 输出当前棋盘状态信息
+    int emptyCount = getEmptyTiles().size();
+    qDebug() << "Auto play step - Empty tiles:" << emptyCount;
+
+    // 开始异步计算最佳移动
     int bestDirection = findBestMove();
+    qDebug() << "Best direction:" << bestDirection;
+
     if (bestDirection != -1) {
         bool moved = moveTiles(bestDirection);
+        qDebug() << "Move successful:" << moved;
 
         // 如果移动成功，生成新的数字块
         if (moved) {
             // 如果有动画正在进行，等待所有动画完成后再生成新方块
             if (pendingAnimations > 0) {
                 animationInProgress = true;
+                qDebug() << "Animations pending:" << pendingAnimations;
                 // 使用单次计时器延迟生成新方块，等待所有动画完成
                 QTimer::singleShot(200, this, [this]() {
                     generateNewTile(true);  // 生成新方块，使用动画效果
+                    qDebug() << "New tile generated after animation";
 
                     // 检查游戏状态
                     if (isGameWon()) {
                         // 达到2048后只弹出一次提示
                         if (!winAlertShown) {
+                            // 暂停自动操作并保存状态
+                            bool wasAutoPlaying = autoPlayActive;
+                            if (autoPlayActive) {
+                                autoPlayTimer->stop();
+                            }
+
                             showWinMessage();
+
+                            // 如果用户选择继续游戏且之前处于自动操作状态，恢复自动操作
+                            if (wasAutoPlaying && autoPlayActive) {
+                                qDebug() << "Resuming auto play after win";
+                                startAiCalculation();
+                                autoPlayTimer->start(300);  // 使用默认的300毫秒间隔
+                            }
+                        } else {
+                            // 已经显示过胜利提示，继续计算下一步
+                            qDebug() << "Continuing after 2048 - Starting next AI calculation";
+                            startAiCalculation();
                         }
                     } else if (isGameOver()) {
+                        qDebug() << "Game over detected";
                         showGameOverMessage();
                         // 游戏结束时停止自动操作
                         autoPlayActive              = false;
@@ -951,20 +1062,43 @@ void MainWindow::autoPlayStep() {
                             autoPlayButton->setText("Auto Play");
                         }
                         autoPlayTimer->stop();
+                    } else {
+                        // 如果游戏未结束，开始计算下一步的最佳移动
+                        qDebug() << "Starting next AI calculation";
+                        startAiCalculation();
                     }
 
                     animationInProgress = false;  // 重置动画状态
                 });
             } else {
                 generateNewTile(true);  // 生成新方块，使用动画效果
+                qDebug() << "New tile generated immediately";
 
                 // 检查游戏状态
                 if (isGameWon()) {
                     // 达到2048后只弹出一次提示
                     if (!winAlertShown) {
+                        // 暂停自动操作并保存状态
+                        bool wasAutoPlaying = autoPlayActive;
+                        if (autoPlayActive) {
+                            autoPlayTimer->stop();
+                        }
+
                         showWinMessage();
+
+                        // 如果用户选择继续游戏且之前处于自动操作状态，恢复自动操作
+                        if (wasAutoPlaying && autoPlayActive) {
+                            qDebug() << "Resuming auto play after win";
+                            startAiCalculation();
+                            autoPlayTimer->start(300);  // 使用默认的300毫秒间隔
+                        }
+                    } else {
+                        // 已经显示过胜利提示，继续计算下一步
+                        qDebug() << "Continuing after 2048 - Starting next AI calculation";
+                        startAiCalculation();
                     }
                 } else if (isGameOver()) {
+                    qDebug() << "Game over detected";
                     showGameOverMessage();
                     // 游戏结束时停止自动操作
                     autoPlayActive              = false;
@@ -974,16 +1108,109 @@ void MainWindow::autoPlayStep() {
                         autoPlayButton->setText("Auto Play");
                     }
                     autoPlayTimer->stop();
+                } else {
+                    // 如果游戏未结束，开始计算下一步的最佳移动
+                    qDebug() << "Starting next AI calculation";
+                    startAiCalculation();
                 }
             }
+        } else {
+            // 如果移动不成功，开始计算下一步的最佳移动
+            qDebug() << "Move was not successful, trying another direction";
+            startAiCalculation();
         }
+    } else {
+        // 如果没有有效移动，开始计算下一步的最佳移动
+        qDebug() << "No valid direction found, trying again";
+        startAiCalculation();
     }
 }
 
 // findBestMove: 找出最佳移动方向
 int MainWindow::findBestMove() {
-    // 使用Auto类的findBestMove方法
+    // 如果已经在计算中，返回上次计算的结果
+    QMutexLocker locker(&aiMutex);
+    if (aiCalculating) {
+        // 如果还没有计算结果，返回随机方向
+        if (aiCalculatedMove == -1) {
+            return QRandomGenerator::global()->bounded(4);
+        }
+        return aiCalculatedMove;
+    }
+
+    // 将当前棋盘状态传递给AI进行计算
     return autoPlayer->findBestMove(board);
+}
+
+// startAiCalculation: 开始异步AI计算
+void MainWindow::startAiCalculation() {
+    QMutexLocker locker(&aiMutex);
+
+    // 如果已经在计算中，不重复启动
+    if (aiCalculating) {
+        return;
+    }
+
+    // 标记正在计算
+    aiCalculating    = true;
+    aiCalculatedMove = -1;
+
+    // 清除expectimax缓存，提高性能
+    autoPlayer->clearExpectimaxCache();
+
+    // 复制当前棋盘状态供异步计算使用
+    QVector<QVector<int>> boardCopy = board;
+
+    // 启动超时定时器
+    aiTimeoutTimer->start();
+
+    // 在单独线程中计算最佳移动
+    aiFuture = QtConcurrent::run([this, boardCopy]() {
+        // 计算最佳移动
+        int bestMove = autoPlayer->findBestMove(boardCopy);
+
+        // 存储计算结果
+        QMutexLocker locker(&aiMutex);
+        aiCalculatedMove = bestMove;
+
+        // 触发计算完成信号
+        QMetaObject::invokeMethod(this, "onAiCalculationFinished", Qt::QueuedConnection);
+
+        return bestMove;
+    });
+}
+
+// onAiCalculationFinished: 处理AI计算完成
+void MainWindow::onAiCalculationFinished() {
+    // 停止超时定时器
+    aiTimeoutTimer->stop();
+
+    QMutexLocker locker(&aiMutex);
+    aiCalculating = false;
+
+    // 如果自动操作仍然活跃，继续下一步
+    if (autoPlayActive && !animationInProgress) {
+        QTimer::singleShot(50, this, &MainWindow::autoPlayStep);
+    }
+}
+
+// onAiCalculationTimeout: 处理AI计算超时
+void MainWindow::onAiCalculationTimeout() {
+    QMutexLocker locker(&aiMutex);
+
+    // 如果计算仍然在进行，但超时了
+    if (aiCalculating) {
+        // 使用随机方向作为备选
+        aiCalculatedMove = QRandomGenerator::global()->bounded(4);
+
+        // 不等待计算完成，直接继续
+        aiCalculating = false;
+
+        // 如果自动操作仍然活跃，继续下一步
+        if (autoPlayActive && !animationInProgress) {
+            QTimer::singleShot(50, this, &MainWindow::autoPlayStep);
+        }
+    }
 }
 
 // on_learnButton_clicked: 处理学习按钮的点击事件
@@ -1102,8 +1329,16 @@ void MainWindow::on_learnButton_clicked() {
     layout->addWidget(resultsDisplay);
     layout->addWidget(stopButton);
 
-    // 连接取消按钮
-    connect(stopButton, &QPushButton::clicked, trainingDialog, &QDialog::reject);
+    // 连接取消按钮 - 使用自定义处理函数
+    connect(stopButton, &QPushButton::clicked, [=]() {
+        // 如果按钮文本是"Close"，说明训练已经完成，直接关闭对话框
+        if (stopButton->text() == "Close") {
+            trainingDialog->close();
+        } else {
+            // 否则是训练过程中的停止操作
+            trainingDialog->reject();
+        }
+    });
 
     // 更新状态显示学习开始
     updateStatus("Learning optimal strategies...");
@@ -1120,13 +1355,24 @@ void MainWindow::on_learnButton_clicked() {
     // 连接训练进度信号
     TrainingProgress* trainingProgress = autoPlayer->getTrainingProgress();
 
+    // 添加单次模拟进度更新的连接
+    QLabel* simulationLabel = new QLabel("Simulation: 0/0", trainingDialog);
+    layout->insertWidget(3, simulationLabel);  // 插入到布局中
+
+    connect(trainingProgress,
+            &TrainingProgress::simulationUpdated,
+            [=](int currentSim, int totalSims, int avgScore, int totalProgress) {
+                // 更新模拟进度
+                simulationLabel->setText(
+                    QString("Simulation: %1/%2 (Avg Score: %3)").arg(currentSim).arg(totalSims).arg(avgScore));
+
+                // 更新总进度条
+                progressBar->setValue(totalProgress);
+            });
+
     connect(trainingProgress,
             &TrainingProgress::progressUpdated,
             [=](int generation, int totalGenerations, int bestScore, QVector<double> const& bestParams) {
-                // 更新进度条
-                int progress = (generation * 100) / totalGenerations;
-                progressBar->setValue(progress);
-
                 // 更新标签
                 statusLabel->setText(QString("Training generation %1 of %2...").arg(generation).arg(totalGenerations));
                 generationLabel->setText(QString("Generation: %1/%2").arg(generation).arg(totalGenerations));
@@ -1141,56 +1387,230 @@ void MainWindow::on_learnButton_clicked() {
                 resultsDisplay->append(QString("Generation %1: Best Score = %2").arg(generation).arg(bestScore));
             });
 
-    connect(trainingProgress,
-            &TrainingProgress::trainingCompleted,
-            [this, statusLabel, progressBar, resultsDisplay, stopButton, learnButton, saveParams](
-                int finalScore, QVector<double> const& finalParams) {
-                // 更新状态
-                statusLabel->setText("Training completed!");
-                progressBar->setValue(100);
+    connect(
+        trainingProgress,
+        &TrainingProgress::trainingCompleted,
+        this,
+        [this, statusLabel, progressBar, resultsDisplay, stopButton, learnButton, saveParams, trainingDialog](
+            int finalScore, QVector<double> const& finalParams) {
+            // 使用QMetaObject::invokeMethod确保在主线程中更新UI
+            QMetaObject::invokeMethod(
+                this,
+                [this,
+                 statusLabel,
+                 progressBar,
+                 resultsDisplay,
+                 stopButton,
+                 learnButton,
+                 saveParams,
+                 finalScore,
+                 finalParams,
+                 trainingDialog]() {
+                    // 更新状态
+                    statusLabel->setText("Training completed!");
+                    progressBar->setValue(100);
 
-                // 显示最终结果
-                resultsDisplay->append("\nTraining completed!");
-                resultsDisplay->append(QString("Final Best Score: %1").arg(finalScore));
-                resultsDisplay->append("\nFinal Parameters:");
-                for (int i = 0; i < finalParams.size(); i++) {
-                    resultsDisplay->append(QString("Parameter %1: %2").arg(i + 1).arg(finalParams[i], 0, 'f', 2));
-                }
-
-                // 保存参数
-                if (saveParams) {
-                    if (autoPlayer->saveParameters()) {
-                        resultsDisplay->append("\nParameters saved successfully.");
-                    } else {
-                        resultsDisplay->append("\nFailed to save parameters.");
+                    // 显示最终结果
+                    resultsDisplay->append("\nTraining completed!");
+                    resultsDisplay->append(QString("Final Best Score: %1").arg(finalScore));
+                    resultsDisplay->append("\nFinal Parameters:");
+                    for (int i = 0; i < finalParams.size(); i++) {
+                        resultsDisplay->append(QString("Parameter %1: %2").arg(i + 1).arg(finalParams[i], 0, 'f', 2));
                     }
-                }
 
-                // 更改按钮文本
-                stopButton->setText("Close");
+                    // 保存参数
+                    if (saveParams) {
+                        if (autoPlayer->saveParameters()) {
+                            resultsDisplay->append("\nParameters saved successfully.");
+                        } else {
+                            resultsDisplay->append("\nFailed to save parameters.");
+                        }
+                    }
 
-                // 更新状态
-                updateStatus("Learning completed! Auto play will now use learned strategies.");
+                    // 更改按钮文本
+                    stopButton->setText("Close");
 
-                // 重新启用学习按钮
-                if (learnButton) {
-                    learnButton->setEnabled(true);
-                }
-            });
+                    // 更新状态
+                    updateStatus("Learning completed! Auto play will now use learned strategies.");
+
+                    // 重新启用学习按钮
+                    if (learnButton) {
+                        learnButton->setEnabled(true);
+                    }
+
+                    // 确保对话框不会被自动关闭
+                    trainingDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+
+    // 创建一个定时器来强制UI更新
+    QTimer* uiUpdateTimer = new QTimer();
+    uiUpdateTimer->setInterval(100);              // 每100毫秒更新一次UI
+    uiUpdateTimer->moveToThread(qApp->thread());  // 确保定时器在主线程中运行
+
+    // 连接定时器信号到应用程序处理事件
+    connect(uiUpdateTimer, &QTimer::timeout, qApp, [=]() {
+        qApp->processEvents();  // 强制处理所有排队的事件
+    });
+
+    // 启动UI更新定时器
+    uiUpdateTimer->start();
+
+    // 创建一个新的线程来运行训练过程
+    QThread* trainingThread = new QThread();
 
     // 连接对话框关闭信号
-    connect(trainingDialog, &QDialog::finished, [=]() {
+    connect(trainingDialog, &QDialog::finished, [this, trainingThread, learnButton, uiUpdateTimer, trainingDialog]() {
+        qDebug() << "Training dialog finished signal received";
+
         // 确保学习按钮被重新启用
         if (learnButton) {
             learnButton->setEnabled(true);
+            qDebug() << "Learn button re-enabled";
         }
 
-        trainingDialog->deleteLater();
+        // 停止UI更新定时器
+        if (uiUpdateTimer && uiUpdateTimer->isActive()) {
+            uiUpdateTimer->stop();
+            qDebug() << "UI update timer stopped";
+        }
+
+        // 如果训练线程仍在运行，确保停止训练
+        if (trainingThread && trainingThread->isRunning()) {
+            qDebug() << "Stopping training thread...";
+            autoPlayer->stopTraining();
+            qDebug() << "Training stopped due to dialog closing";
+
+            // 等待线程结束，最多等待3秒
+            if (!trainingThread->wait(3000)) {
+                qDebug() << "Training thread did not stop in time, terminating...";
+                trainingThread->terminate();
+                trainingThread->wait();
+            }
+            qDebug() << "Training thread stopped successfully";
+        }
+
+        // 安全删除对话框
+        QTimer::singleShot(1000, trainingDialog, &QDialog::deleteLater);
+        qDebug() << "Training dialog scheduled for deletion";
+
+        qDebug() << "Training dialog cleanup completed";
     });
 
-    // 使用QTimer延迟执行学习过程，以便 UI 能够更新
-    QTimer::singleShot(100, this, [this, populationSize, generations, simulations]() {
-        // 调用Auto类的学习方法
-        autoPlayer->learnParameters(populationSize, generations, simulations);
+    // 创建一个对象来在新线程中运行训练
+    QObject* worker = new QObject();
+    worker->moveToThread(trainingThread);
+
+    // 连接线程启动信号到训练函数
+    connect(trainingThread,
+            &QThread::started,
+            worker,
+            [this, uiUpdateTimer, trainingThread, populationSize, generations, simulations]() {
+                qDebug() << "Training thread started";
+
+                try {
+                    // 启动UI更新定时器
+                    if (uiUpdateTimer && !uiUpdateTimer->isActive()) {
+                        QMetaObject::invokeMethod(uiUpdateTimer, "start", Qt::QueuedConnection);
+                        qDebug() << "UI update timer started from training thread";
+                    }
+
+                    // 调用Auto类的学习方法
+                    autoPlayer->learnParameters(populationSize, generations, simulations);
+                    qDebug() << "Training function completed successfully";
+                } catch (std::exception const& e) {
+                    qDebug() << "Exception in training thread:" << e.what();
+                } catch (...) {
+                    qDebug() << "Unknown exception in training thread";
+                }
+
+                // 停止UI更新定时器
+                if (uiUpdateTimer && uiUpdateTimer->isActive()) {
+                    QMetaObject::invokeMethod(uiUpdateTimer, "stop", Qt::QueuedConnection);
+                    qDebug() << "UI update timer stopped from training thread";
+                }
+
+                // 结束线程
+                if (trainingThread && trainingThread->isRunning()) {
+                    QMetaObject::invokeMethod(trainingThread, "quit", Qt::QueuedConnection);
+                    qDebug() << "Training thread requested to quit";
+                }
+            });
+
+    // 连接线程结束信号到清理函数
+    connect(trainingThread, &QThread::finished, worker, &QObject::deleteLater, Qt::QueuedConnection);
+    connect(trainingThread, &QThread::finished, uiUpdateTimer, &QObject::deleteLater, Qt::QueuedConnection);
+
+    // 使用延迟删除线程对象，确保其他资源先被清理
+    connect(trainingThread, &QThread::finished, trainingThread, [trainingThread]() {
+        qDebug() << "Training thread finished, scheduling deletion";
+        QTimer::singleShot(500, trainingThread, &QObject::deleteLater);
     });
+
+    // 连接对话框关闭信号到线程终止
+    connect(
+        trainingDialog,
+        &QDialog::rejected,
+        this,
+        [this, trainingThread, uiUpdateTimer]() {
+            qDebug() << "Training dialog rejected signal received";
+
+            if (trainingThread && trainingThread->isRunning()) {
+                // 通知Auto停止训练
+                autoPlayer->stopTraining();
+                qDebug() << "Training stopped by user";
+
+                // 停止UI更新定时器
+                if (uiUpdateTimer && uiUpdateTimer->isActive()) {
+                    uiUpdateTimer->stop();
+                    qDebug() << "UI update timer stopped due to user cancellation";
+                }
+
+                // 更新状态显示
+                updateStatus("Training stopped by user.");
+
+                // 不立即终止线程，而是等待其自然结束
+                // 这样可以避免内存泄漏和崩溃
+                QTimer::singleShot(100, this, [trainingThread]() {
+                    // 如果线程仍然在运行，显示一个正在停止的消息
+                    if (trainingThread && trainingThread->isRunning()) {
+                        QMessageBox::information(
+                            nullptr, "Training", "Training is being stopped safely. Please wait...");
+                    }
+                });
+            }
+        },
+        Qt::QueuedConnection);
+
+    // 启动训练线程
+    trainingThread->start();
+}
+
+// on_resetAIButton_clicked: 处理重置AI按钮的点击事件
+void MainWindow::on_resetAIButton_clicked() {
+    // 创建确认对话框
+    QMessageBox confirmBox;
+    confirmBox.setWindowTitle("Reset AI");
+    confirmBox.setText("Are you sure you want to reset the AI?");
+    confirmBox.setInformativeText("This will delete all training data and reset the AI to default parameters.");
+    confirmBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    confirmBox.setDefaultButton(QMessageBox::No);
+    confirmBox.setIcon(QMessageBox::Warning);
+
+    // 显示对话框并获取用户选择
+    int ret = confirmBox.exec();
+
+    // 如果用户确认重置
+    if (ret == QMessageBox::Yes) {
+        // 重置AI参数
+        autoPlayer->resetBestHistoricalScore();
+
+        // 更新状态
+        updateStatus("AI has been reset to default parameters.");
+
+        // 显示成功消息
+        QMessageBox::information(this, "Reset Complete", "AI has been reset to default parameters.");
+    }
 }
