@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMutexLocker>
+#include <algorithm>
 
 // TrainingTask的run方法实现
 void TrainingTask::run() {
@@ -426,7 +427,8 @@ int Auto::findBestMove(QVector<QVector<int>> const& board) {
         }
     }
 
-    // 如果棋盘上有高级方块，使用位棋盘实现以提高性能
+    // 如果棋盘上有高级方块，尝试使用位棋盘实现以提高性能
+    // 但是如果失败，则回退到标准方法
     if (maxValue >= 2048) {
         // 清除缓存以确保最新的计算结果
         clearExpectimaxCache();
@@ -438,8 +440,22 @@ int Auto::findBestMove(QVector<QVector<int>> const& board) {
             tablesInitialized = true;
         }
 
-        // 使用位棋盘实现的最佳移动函数
-        return getBestMoveBitBoard(board);
+        // 尝试使用位棋盘实现的最佳移动函数
+        try {
+            int bestMove = getBestMoveBitBoard(board);
+
+            // 如果位棋盘方法没有找到有效移动，回退到标准方法
+            if (bestMove != -1) {
+                qDebug() << "Using BitBoard method with best move:" << bestMove;
+                return bestMove;
+            }
+            qDebug() << "BitBoard method failed to find a valid move, falling back to standard method";
+        } catch (std::exception const& e) {
+            qDebug() << "Exception in BitBoard method:" << e.what() << ", falling back to standard method";
+        } catch (...) {
+            qDebug() << "Unknown exception in BitBoard method, falling back to standard method";
+        }
+        // 如果到达这里，说明位棋盘方法失败，继续使用标准方法
     }
 
     int bestScore     = -1;
@@ -1276,18 +1292,20 @@ bool Auto::simulateMoveBitBoard(BitBoard& board, int direction, int& score) {
             board = execute_move_3(board);
             break;
         default:
+            qDebug() << "Invalid direction:" << direction;
             return false;
     }
 
     // 如果棋盘没有变化，说明这个方向不能移动
     if (board == oldBoard) {
+        qDebug() << "BitBoard move in direction" << direction << "did not change the board";
         return false;
     }
 
     // 计算分数 - 分数来自于合并的方块
     BitBoard diff = oldBoard ^ board;
     BitBoard temp = diff;
-    while (temp) {
+    while (temp != 0U) {
         int pos = __builtin_ctzll(temp) / 4 * 4;
         int val = (board >> pos) & 0xf;
         if (val > 1) {  // 如果发生了合并
@@ -1310,9 +1328,7 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
 
     // 绝对深度限制 - 防止过深递归
     static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
-    if (depth > MAX_ABSOLUTE_DEPTH) {
-        depth = MAX_ABSOLUTE_DEPTH;
-    }
+    depth                               = std::min(depth, MAX_ABSOLUTE_DEPTH);
 
     // 如果到达最大深度，返回评估分数
     if (depth <= 0) {
@@ -1459,8 +1475,9 @@ int Auto::getBestMoveBitBoard(QVector<QVector<int>> const& boardState) {
     // 转换为位棋盘
     BitBoard board = convertToBitBoard(boardState);
 
-    int bestMove  = -1;
-    int bestScore = -1;
+    int bestMove       = -1;
+    int bestScore      = -1;
+    int validMoveCount = 0;
 
     // 尝试所有可能的移动
     for (int move = 0; move < 4; ++move) {
@@ -1470,23 +1487,51 @@ int Auto::getBestMoveBitBoard(QVector<QVector<int>> const& boardState) {
         bool moved = simulateMoveBitBoard(boardCopy, move, moveScore);
 
         if (moved) {
+            validMoveCount++;
             // 计算此移动的分数
             int score = moveScore + expectimaxBitBoard(boardCopy, 3, false);
+            qDebug() << "BitBoard method - Direction:" << move << "Score:" << score;
 
             if (score > bestScore) {
                 bestScore = score;
                 bestMove  = move;
             }
+        } else {
+            qDebug() << "BitBoard method - Direction:" << move << "is not valid";
         }
     }
 
-    // 如果没有有效移动，随机选择一个方向
+    // 如果没有有效移动，返回-1表示失败，让标准方法处理
     if (bestMove == -1) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, 3);
-        bestMove = dis(gen);
+        qDebug() << "BitBoard method - No valid moves found, returning -1 to fall back to standard method";
+        return -1;
     }
+
+    // 验证最佳移动是否真的有效
+    QVector<QVector<int>> testBoard = boardState;
+    int testScore                   = 0;
+    bool validMove                  = simulateMove(testBoard, bestMove, testScore);
+
+    if (!validMove) {
+        qDebug() << "BitBoard method selected move" << bestMove
+                 << "but it's not valid when tested with standard method";
+
+        // 尝试标准方法找到有效移动
+        for (int move = 0; move < 4; ++move) {
+            QVector<QVector<int>> moveTestBoard = boardState;
+            int moveTestScore                   = 0;
+            if (simulateMove(moveTestBoard, move, moveTestScore)) {
+                qDebug() << "Found valid move" << move << "using standard method";
+                return move;
+            }
+        }
+
+        return -1;  // 如果标准方法也找不到有效移动，返回-1
+    }
+
+    qDebug() << "BitBoard method - Best move:" << bestMove << "with score:" << bestScore << "(" << validMoveCount
+             << " valid moves)";
+    qDebug() << "Using BitBoard method with best move:" << bestMove;
 
     return bestMove;
 }

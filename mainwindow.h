@@ -75,7 +75,8 @@ class MainWindow : public QMainWindow {
     void startNewGame();
 
     // 游戏逻辑
-    bool moveTiles(int direction);  // 0=up, 1=right, 2=down, 3=left
+    bool moveTiles(int direction);                                             // 0=up, 1=right, 2=down, 3=left
+    bool canMoveTiles(QVector<QVector<int>>& testBoard, int direction) const;  // 检查是否可以向指定方向移动
     void generateNewTile(bool animate = true);
     bool isMoveAvailable() const;
     bool isGameOver() const;

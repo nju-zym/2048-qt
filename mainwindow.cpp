@@ -903,6 +903,158 @@ QVector<QPair<int, int>> MainWindow::getEmptyTiles() const {
     return emptyTiles;
 }
 
+// canMoveTiles: 检查是否可以向指定方向移动
+bool MainWindow::canMoveTiles(QVector<QVector<int>>& testBoard, int direction) const {
+    QVector<QVector<int>> boardCopy = testBoard;
+    bool moved                      = false;
+
+    // 根据传入的方向执行不同的移动和合并逻辑
+    if (direction == 0) {  // 向上移动
+        for (int col = 0; col < 4; col++) {
+            int writePos = 0;
+            // 第一步：将非零方块上移，消除中间空隙
+            for (int row = 0; row < 4; row++) {
+                if (testBoard[row][col] != 0) {
+                    if (row != writePos) {
+                        testBoard[writePos][col] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos++;
+                }
+            }
+            // 第二步：合并相邻且相同的方块
+            for (int row = 0; row < 3; row++) {
+                if (testBoard[row][col] != 0 && testBoard[row][col] == testBoard[row + 1][col]) {
+                    testBoard[row][col]     *= 2;
+                    testBoard[row + 1][col]  = 0;
+                    moved                    = true;
+                }
+            }
+            // 第三步：再次上移以消除合并后产生的空隙
+            writePos = 0;
+            for (int row = 0; row < 4; row++) {
+                if (testBoard[row][col] != 0) {
+                    if (row != writePos) {
+                        testBoard[writePos][col] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos++;
+                }
+            }
+        }
+    } else if (direction == 1) {  // 向右移动
+        for (int row = 0; row < 4; row++) {
+            int writePos = 3;
+            // 将非零方块集中到右侧
+            for (int col = 3; col >= 0; col--) {
+                if (testBoard[row][col] != 0) {
+                    if (col != writePos) {
+                        testBoard[row][writePos] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos--;
+                }
+            }
+            // 合并相邻且相同的方块
+            for (int col = 3; col > 0; col--) {
+                if (testBoard[row][col] != 0 && testBoard[row][col] == testBoard[row][col - 1]) {
+                    testBoard[row][col]     *= 2;
+                    testBoard[row][col - 1]  = 0;
+                    moved                    = true;
+                }
+            }
+            // 再次将非零方块集中到右侧
+            writePos = 3;
+            for (int col = 3; col >= 0; col--) {
+                if (testBoard[row][col] != 0) {
+                    if (col != writePos) {
+                        testBoard[row][writePos] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos--;
+                }
+            }
+        }
+    } else if (direction == 2) {  // 向下移动
+        for (int col = 0; col < 4; col++) {
+            int writePos = 3;
+            // 将非零方块集中到下方
+            for (int row = 3; row >= 0; row--) {
+                if (testBoard[row][col] != 0) {
+                    if (row != writePos) {
+                        testBoard[writePos][col] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos--;
+                }
+            }
+            // 合并相邻且相同的方块
+            for (int row = 3; row > 0; row--) {
+                if (testBoard[row][col] != 0 && testBoard[row][col] == testBoard[row - 1][col]) {
+                    testBoard[row][col]     *= 2;
+                    testBoard[row - 1][col]  = 0;
+                    moved                    = true;
+                }
+            }
+            // 再次将非零方块集中到下方
+            writePos = 3;
+            for (int row = 3; row >= 0; row--) {
+                if (testBoard[row][col] != 0) {
+                    if (row != writePos) {
+                        testBoard[writePos][col] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos--;
+                }
+            }
+        }
+    } else if (direction == 3) {  // 向左移动
+        for (int row = 0; row < 4; row++) {
+            int writePos = 0;
+            // 将非零方块集中到左侧
+            for (int col = 0; col < 4; col++) {
+                if (testBoard[row][col] != 0) {
+                    if (col != writePos) {
+                        testBoard[row][writePos] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos++;
+                }
+            }
+            // 合并相邻且相同的方块
+            for (int col = 0; col < 3; col++) {
+                if (testBoard[row][col] != 0 && testBoard[row][col] == testBoard[row][col + 1]) {
+                    testBoard[row][col]     *= 2;
+                    testBoard[row][col + 1]  = 0;
+                    moved                    = true;
+                }
+            }
+            // 再次将非零方块集中到左侧
+            writePos = 0;
+            for (int col = 0; col < 4; col++) {
+                if (testBoard[row][col] != 0) {
+                    if (col != writePos) {
+                        testBoard[row][writePos] = testBoard[row][col];
+                        testBoard[row][col]      = 0;
+                        moved                    = true;
+                    }
+                    writePos++;
+                }
+            }
+        }
+    }
+
+    // 如果棋盘状态有变化，说明可以移动
+    return moved;
+}
+
 // isMoveAvailable: 检查是否有可用的移动
 bool MainWindow::isMoveAvailable() const {
     // 如果有空格，则可以移动
@@ -1013,6 +1165,19 @@ void MainWindow::autoPlayStep() {
     int bestDirection = findBestMove();
     qDebug() << "Best direction:" << bestDirection;
 
+    // 如果没有找到有效移动，尝试所有方向
+    if (bestDirection == -1) {
+        qDebug() << "No valid move found, trying all directions";
+        for (int dir = 0; dir < 4; dir++) {
+            bool moved = moveTiles(dir);
+            if (moved) {
+                bestDirection = dir;
+                qDebug() << "Found valid direction:" << dir;
+                break;
+            }
+        }
+    }
+
     if (bestDirection != -1) {
         bool moved = moveTiles(bestDirection);
         qDebug() << "Move successful:" << moved;
@@ -1115,9 +1280,115 @@ void MainWindow::autoPlayStep() {
                 }
             }
         } else {
-            // 如果移动不成功，开始计算下一步的最佳移动
+            // 如果移动不成功，尝试其他方向
             qDebug() << "Move was not successful, trying another direction";
-            startAiCalculation();
+            // 尝试其他方向
+            int nextDirection = (bestDirection + 1) % 4;
+            qDebug() << "Trying next direction:" << nextDirection;
+            bool moved = moveTiles(nextDirection);
+
+            if (moved) {
+                // 如果新方向移动成功，生成新的数字块并继续游戏
+                if (pendingAnimations > 0) {
+                    animationInProgress = true;
+                    QTimer::singleShot(200, this, [this]() {
+                        generateNewTile(true);
+                        qDebug() << "New tile generated after trying another direction";
+
+                        // 检查游戏状态
+                        if (isGameWon()) {
+                            if (!winAlertShown) {
+                                bool wasAutoPlaying = autoPlayActive;
+                                if (autoPlayActive) {
+                                    autoPlayTimer->stop();
+                                }
+
+                                showWinMessage();
+
+                                if (wasAutoPlaying && autoPlayActive) {
+                                    qDebug() << "Resuming auto play after win";
+                                    startAiCalculation();
+                                    autoPlayTimer->start(300);
+                                }
+                            } else {
+                                qDebug() << "Continuing after 2048 - Starting next AI calculation";
+                                startAiCalculation();
+                            }
+                        } else if (isGameOver()) {
+                            qDebug() << "Game over detected";
+                            showGameOverMessage();
+                            autoPlayActive              = false;
+                            QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+                            if (autoPlayButton) {
+                                autoPlayButton->setChecked(false);
+                                autoPlayButton->setText("Auto Play");
+                            }
+                            autoPlayTimer->stop();
+                        } else {
+                            qDebug() << "Starting next AI calculation";
+                            startAiCalculation();
+                        }
+
+                        animationInProgress = false;
+                    });
+                } else {
+                    generateNewTile(true);
+                    qDebug() << "New tile generated immediately after trying another direction";
+
+                    // 检查游戏状态
+                    if (isGameWon()) {
+                        if (!winAlertShown) {
+                            bool wasAutoPlaying = autoPlayActive;
+                            if (autoPlayActive) {
+                                autoPlayTimer->stop();
+                            }
+
+                            showWinMessage();
+
+                            if (wasAutoPlaying && autoPlayActive) {
+                                qDebug() << "Resuming auto play after win";
+                                startAiCalculation();
+                                autoPlayTimer->start(300);
+                            }
+                        } else {
+                            qDebug() << "Continuing after 2048 - Starting next AI calculation";
+                            startAiCalculation();
+                        }
+                    } else if (isGameOver()) {
+                        qDebug() << "Game over detected";
+                        showGameOverMessage();
+                        autoPlayActive              = false;
+                        QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+                        if (autoPlayButton) {
+                            autoPlayButton->setChecked(false);
+                            autoPlayButton->setText("Auto Play");
+                        }
+                        autoPlayTimer->stop();
+                    } else {
+                        qDebug() << "Starting next AI calculation";
+                        startAiCalculation();
+                    }
+                }
+            } else {
+                // 如果所有方向都尝试过了，检查是否游戏结束
+                qDebug() << "All directions failed, checking game state";
+
+                if (isGameOver()) {
+                    qDebug() << "Game over detected after trying all directions";
+                    showGameOverMessage();
+                    autoPlayActive              = false;
+                    QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
+                    if (autoPlayButton) {
+                        autoPlayButton->setChecked(false);
+                        autoPlayButton->setText("Auto Play");
+                    }
+                    autoPlayTimer->stop();
+                } else {
+                    // 如果游戏未结束，重新计算最佳移动
+                    qDebug() << "Game not over, recalculating best move";
+                    startAiCalculation();
+                }
+            }
         }
     } else {
         // 如果没有有效移动，开始计算下一步的最佳移动
@@ -1139,7 +1410,21 @@ int MainWindow::findBestMove() {
     }
 
     // 将当前棋盘状态传递给AI进行计算
-    return autoPlayer->findBestMove(board);
+    int bestMove = autoPlayer->findBestMove(board);
+
+    // 如果没有找到有效移动，尝试所有方向看哪个是有效的
+    if (bestMove == -1) {
+        qDebug() << "AI could not find a valid move, trying all directions manually";
+        for (int dir = 0; dir < 4; dir++) {
+            QVector<QVector<int>> testBoard = board;
+            if (canMoveTiles(testBoard, dir)) {
+                qDebug() << "Found valid direction:" << dir;
+                return dir;
+            }
+        }
+    }
+
+    return bestMove;
 }
 
 // startAiCalculation: 开始异步AI计算
