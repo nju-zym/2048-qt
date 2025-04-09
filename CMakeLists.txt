@@ -12,6 +12,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
+# Find OpenCL package
+find_package(OpenCL REQUIRED)
+
 set(PROJECT_SOURCES
         main.cpp
         mainwindow.cpp
@@ -19,8 +22,9 @@ set(PROJECT_SOURCES
         mainwindow.ui
         auto.cpp
         auto.h
-        trainingworker.h
-        trainingworker.cpp
+        auto_gpu.cpp
+        opencl_manager.cpp
+        opencl_manager.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -48,7 +52,7 @@ else()
     endif()
 endif()
 
-target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets OpenCL::OpenCL)
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an

@@ -1,1020 +1,339 @@
 #include "auto.h"
 
-#include "trainingworker.h"
+#include "opencl_manager.h"  // 确保OpenCLManager完整定义可用
 
-#include <QApplication>
-#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QMutexLocker>
+#include <QTextStream>
 #include <algorithm>
+#include <cmath>
+#include <random>
 
-// TrainingTask的run方法实现
-void TrainingTask::run() {
-    // 模拟多次游戏并计算平均分数
-    int totalScore = 0;
-    Auto autoPlayer;
+// 构造函数：初始化权重和其他成员变量
+Auto::Auto(QObject* parent) : QObject(parent), stopTrainingFlag(false), openclManager(nullptr), useGPU(false) {
+    // 初始化评估函数的权重
+    weights = {
+        10.0,  // 空格数量权重
+        2.0,   // 单调性权重
+        1.0,   // 平滑度权重
+        2.0,   // 角落策略权重
+        1.0    // 合并可能性权重
+    };
 
-    try {
-        // 初始化位棋盘表格 - 确保在开始模拟前初始化
-        autoPlayer.initTables();
+    // 初始化训练进度对象
+    trainingProgress = new TrainingProgress(this);
 
-        // 复制回调函数，避免捕获this
-        auto progressCallbackCopy = progressCallback;
-        auto finalCallbackCopy    = finalCallback;
-        int simulationsCopy       = simulations;
-
-        for (int i = 0; i < simulations; ++i) {
-            int gameScore  = autoPlayer.simulateFullGame(params);
-            totalScore    += gameScore;
-
-            // 如果提供了进度回调，则在每次模拟后调用
-            if (progressCallbackCopy) {
-                // 计算当前平均分数
-                int currentAvgScore = totalScore / (i + 1);
-                // 使用QMetaObject::invokeMethod确保回调在主线程中执行
-                QMetaObject::invokeMethod(
-                    QApplication::instance(),
-                    [progressCallbackCopy, i, currentAvgScore, simulationsCopy]() {
-                        if (progressCallbackCopy) {
-                            progressCallbackCopy(i + 1, simulationsCopy, currentAvgScore);
-                        }
-                    },
-                    Qt::QueuedConnection);
-            }
-        }
-
-        int avgScore = totalScore / simulations;
-
-        // 调用最终回调函数返回分数 - 确保在主线程中执行
-        QMetaObject::invokeMethod(
-            QApplication::instance(),
-            [finalCallbackCopy, avgScore]() {
-                if (finalCallbackCopy) {
-                    finalCallbackCopy(avgScore);
-                }
-            },
-            Qt::QueuedConnection);
-    } catch (std::exception const& e) {
-        // 异常处理
-        qDebug() << "Exception in TrainingTask::run(): " << e.what();
-
-        // 复制回调函数，避免捕获this
-        auto finalCallbackCopy = finalCallback;
-
-        // 确保即使发生异常也会调用回调
-        QMetaObject::invokeMethod(
-            QApplication::instance(),
-            [finalCallbackCopy]() {
-                if (finalCallbackCopy) {
-                    finalCallbackCopy(0);  // 发生异常时返回0分
-                }
-            },
-            Qt::QueuedConnection);
-    } catch (...) {
-        qDebug() << "Unknown exception in TrainingTask::run()";
-
-        // 复制回调函数，避免捕获this
-        auto finalCallbackCopy = finalCallback;
-
-        // 确保即使发生异常也会调用回调
-        QMetaObject::invokeMethod(
-            QApplication::instance(),
-            [finalCallbackCopy]() {
-                if (finalCallbackCopy) {
-                    finalCallbackCopy(0);  // 发生异常时返回0分
-                }
-            },
-            Qt::QueuedConnection);
-    }
-}
-
-// 预计算的移动表
-static uint16_t row_left_table[65536];
-static uint16_t row_right_table[65536];
-static uint64_t col_up_table[65536];
-static uint64_t col_down_table[65536];
-
-// 预计算的评分表
-static float heur_score_table[65536];
-static float score_table[65536];
-
-// 常量定义
-static uint64_t const ROW_MASK = 0xFF'FFULL;
-static uint64_t const COL_MASK = 0x00'0F'00'0F'00'0F'00'0FULL;
-
-// 转置棋盘
-inline static BitBoard transpose(BitBoard x) {
-    BitBoard a1 = x & 0xF0'F0'0F'0F'F0'F0'0F'0FULL;
-    BitBoard a2 = x & 0x00'00'F0'F0'00'00'F0'F0ULL;
-    BitBoard a3 = x & 0x0F'0F'00'00'0F'0F'00'00ULL;
-    BitBoard a  = a1 | (a2 << 12) | (a3 >> 12);
-    BitBoard b1 = a & 0xFF'00'FF'00'00'FF'00'FFULL;
-    BitBoard b2 = a & 0x00'FF'00'FF'00'00'00'00ULL;
-    BitBoard b3 = a & 0x00'00'00'00'FF'00'FF'00ULL;
-    return b1 | (b2 >> 24) | (b3 << 24);
-}
-
-// 反转一行
-inline static uint16_t reverse_row(uint16_t row) {
-    return (row >> 12) | ((row >> 4) & 0x00'F0) | ((row << 4) & 0x0F'00) | (row << 12);
-}
-
-// 将列解包为位棋盘
-inline static BitBoard unpack_col(uint16_t row) {
-    BitBoard tmp = row;
-    return (tmp | (tmp << 12ULL) | (tmp << 24ULL) | (tmp << 36ULL)) & COL_MASK;
-}
-
-// 执行向上移动
-inline static BitBoard execute_move_0(BitBoard board) {
-    BitBoard ret  = board;
-    BitBoard t    = transpose(board);
-    ret          ^= col_up_table[(t >> 0) & ROW_MASK] << 0;
-    ret          ^= col_up_table[(t >> 16) & ROW_MASK] << 4;
-    ret          ^= col_up_table[(t >> 32) & ROW_MASK] << 8;
-    ret          ^= col_up_table[(t >> 48) & ROW_MASK] << 12;
-    return ret;
-}
-
-// 执行向下移动
-inline static BitBoard execute_move_1(BitBoard board) {
-    BitBoard ret  = board;
-    BitBoard t    = transpose(board);
-    ret          ^= col_down_table[(t >> 0) & ROW_MASK] << 0;
-    ret          ^= col_down_table[(t >> 16) & ROW_MASK] << 4;
-    ret          ^= col_down_table[(t >> 32) & ROW_MASK] << 8;
-    ret          ^= col_down_table[(t >> 48) & ROW_MASK] << 12;
-    return ret;
-}
-
-// 执行向左移动
-inline static BitBoard execute_move_2(BitBoard board) {
-    BitBoard ret  = board;
-    ret          ^= BitBoard(row_left_table[(board >> 0) & ROW_MASK]) << 0;
-    ret          ^= BitBoard(row_left_table[(board >> 16) & ROW_MASK]) << 16;
-    ret          ^= BitBoard(row_left_table[(board >> 32) & ROW_MASK]) << 32;
-    ret          ^= BitBoard(row_left_table[(board >> 48) & ROW_MASK]) << 48;
-    return ret;
-}
-
-// 执行向右移动
-inline static BitBoard execute_move_3(BitBoard board) {
-    BitBoard ret  = board;
-    ret          ^= BitBoard(row_right_table[(board >> 0) & ROW_MASK]) << 0;
-    ret          ^= BitBoard(row_right_table[(board >> 16) & ROW_MASK]) << 16;
-    ret          ^= BitBoard(row_right_table[(board >> 32) & ROW_MASK]) << 32;
-    ret          ^= BitBoard(row_right_table[(board >> 48) & ROW_MASK]) << 48;
-    return ret;
-}
-
-// 计算空格数 - 优化版本
-int Auto::countEmptyTiles(BitBoard board) {
-    // 使用位操作快速计算空格数
-    board |= (board >> 2) & 0x33'33'33'33'33'33'33'33ULL;
-    board |= (board >> 1);
-    board  = ~board & 0x11'11'11'11'11'11'11'11ULL;
-
-    // 此时每个半字节是：
-    // 0 如果原始半字节非零
-    // 1 如果原始半字节为零
-    // 现在将它们全部相加
-
-    board += board >> 32;
-    board += board >> 16;
-    board += board >> 8;
-    board += board >> 4;  // 如果有16个空位，这可能会溢出到下一个半字节
-
-    return static_cast<int>(board & 0xf);
-}
-
-// 检查游戏是否结束
-bool Auto::isGameOverBitBoard(BitBoard board) {
-    // 如果有空格，游戏未结束
-    if (countEmptyTiles(board) > 0) {
-        return false;
-    }
-
-    // 检查水平方向是否可以合并
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            int pos1 = (i * 4 + j) * 4;
-            int pos2 = (i * 4 + j + 1) * 4;
-            int val1 = static_cast<int>((board >> pos1) & 0xF);
-            int val2 = static_cast<int>((board >> pos2) & 0xF);
-            if (val1 == val2 && val1 != 0) {
-                return false;  // 可以合并，游戏未结束
-            }
-        }
-    }
-
-    // 检查垂直方向是否可以合并
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            int pos1 = (i * 4 + j) * 4;
-            int pos2 = ((i + 1) * 4 + j) * 4;
-            int val1 = static_cast<int>((board >> pos1) & 0xF);
-            int val2 = static_cast<int>((board >> pos2) & 0xF);
-            if (val1 == val2 && val1 != 0) {
-                return false;  // 可以合并，游戏未结束
-            }
-        }
-    }
-
-    // 没有空格且没有可合并的方块，游戏结束
-    return true;
-}
-
-// 加载持久化数据
-bool Auto::loadPersistentData() {
-    // 打印当前工作目录
-    qDebug() << "Current working directory:" << QDir::currentPath();
-
-    // 确保数据目录存在
-    QString dataDirPath = getDataDirPath();
-    QDir dataDir;
-
-    if (!dataDir.exists(dataDirPath)) {
-        bool pathCreated = dataDir.mkpath(dataDirPath);
-        qDebug() << "Creating data directory at" << dataDirPath << (pathCreated ? "success" : "failed");
-    }
-
-    // 先尝试从数据目录加载持久化数据
-    QString persistentFilePath = dataDirPath + "/2048_ai_persistent_data.json";
-    QFile dataFile(persistentFilePath);
-    qDebug() << "Checking for persistent data file at:" << persistentFilePath;
-    qDebug() << "File exists:" << dataFile.exists();
-
-    // 如果数据目录中有文件，尝试打开
-    if (dataFile.exists() && dataFile.open(QIODevice::ReadOnly)) {
-        QByteArray data = dataFile.readAll();
-        dataFile.close();
-        qDebug() << "Successfully read data from data directory";
-        return processJsonData(data);
-    }
-
-    // 如果没有找到数据
-    qDebug() << "No persistent training data found in any location";
-    return false;
-}
-
-// 处理JSON数据
-bool Auto::processJsonData(QByteArray const& data) {
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (doc.isNull() || !doc.isObject()) {
-        qDebug() << "Invalid persistent training data format.";
-        return false;
-    }
-
-    QJsonObject obj = doc.object();
-    if (!obj.contains("parameters") || !obj["parameters"].isArray() || !obj.contains("score")) {
-        qDebug() << "Missing required fields in persistent training data.";
-        return false;
-    }
-
-    QJsonArray paramsArray = obj["parameters"].toArray();
-    strategyParams.clear();
-
-    for (int i = 0; i < paramsArray.size(); ++i) {
-        strategyParams.append(paramsArray[i].toDouble());
-    }
-
-    bestHistoricalScore = obj["score"].toInt();
-    useLearnedParams    = true;
-
-    qDebug() << "Loaded persistent training data with score:" << bestHistoricalScore;
-    return true;
-}
-
-// 构造函数：初始化策略参数
-Auto::Auto()
-    : strategyParams(5, 1.0),  // 初始化为5个参数，默认值为1.0
-      defaultParams(5, 1.0),   // 初始化默认参数
-      useLearnedParams(false),
-      bestHistoricalScore(0),  // 初始化历史最佳分数为0
-      trainingActive(false) {
-    // 初始化默认参数为经过测试的有效值
-    defaultParams[0] = 2.7;  // 空格数量权重
-    defaultParams[1] = 1.8;  // 蛇形模式权重
-    defaultParams[2] = 3.5;  // 平滑度权重
-    defaultParams[3] = 2.0;  // 单调性权重
-    defaultParams[4] = 1.5;  // 合并可能性权重
-
-    // 初始化随机数生成器
-    srand(time(nullptr));
-
-    // 初始化位棋盘的预计算表
-    initTables();
-
-    // 尝试加载持久化的训练数据
-    if (!loadPersistentData()) {
-        qDebug() << "No persistent training data found, using default parameters";
-    } else {
-        qDebug() << "Loaded persistent training data with score:" << bestHistoricalScore;
-        useLearnedParams = true;
-    }
-}
-
-// 获取数据目录路径
-QString Auto::getDataDirPath() const {
-    return "/Users/yimingzhong/Code/2048-qt/build/Debug/2048-qt.app/Contents/MacOS/data";
-}
-
-// 重置历史最佳分数
-void Auto::resetBestHistoricalScore() {
-    bestHistoricalScore = 0;
-    useLearnedParams    = false;
-    strategyParams      = defaultParams;
-
-    // 确保数据目录存在
-    QDir dataDir;
-    QString dataDirPath = getDataDirPath();
-    if (!dataDir.exists(dataDirPath)) {
-        bool created = dataDir.mkpath(dataDirPath);
-        qDebug() << "Creating data directory at" << dataDirPath << (created ? "success" : "failed");
-    }
-
-    // 删除持久化数据文件 - 使用绝对路径
-    QString persistentFilePath = dataDirPath + "/2048_ai_persistent_data.json";
-    QFile file(persistentFilePath);
-    if (file.exists()) {
-        bool removed = file.remove();
-        qDebug() << "Removed persistent data file from" << persistentFilePath << (removed ? "success" : "failed");
-        if (!removed) {
-            qDebug() << "Error removing file:" << file.errorString();
-        }
-    }
-
-    // 尝试删除根目录的文件
-    QString rootFilePath = QDir::currentPath() + "/2048_ai_persistent_data.json";
-    QFile rootFile(rootFilePath);
-    if (rootFile.exists()) {
-        bool removed = rootFile.remove();
-        qDebug() << "Removed persistent data file from" << rootFilePath << (removed ? "success" : "failed");
-        if (!removed) {
-            qDebug() << "Error removing file:" << rootFile.errorString();
-        }
-    }
-
-    // 删除所有参数文件
-    QDir paramDir(dataDirPath);
-    if (paramDir.exists()) {
-        QStringList filters;
-        filters << "2048_ai_params_*.json" << "params_*.json";
-        QStringList files = paramDir.entryList(filters, QDir::Files);
-
-        for (QString const& fileName : files) {
-            QString fullPath = dataDirPath + "/" + fileName;
-            QFile paramFile(fullPath);
-            bool removed = paramFile.remove();
-            qDebug() << "Removed parameter file:" << fullPath << (removed ? "success" : "failed");
-            if (!removed) {
-                qDebug() << "Error removing file:" << paramFile.errorString();
-            }
-        }
-    }
-
-    qDebug() << "Reset best historical score and removed all persistent data files";
+    // 尝试加载已保存的权重
+    loadParameters();
 }
 
 // 析构函数
 Auto::~Auto() {
-    // 确保训练线程已经结束
-    if (trainingActive.load()) {
-        qDebug() << "Stopping training in Auto destructor";
-        trainingActive.store(false);
-
-        // 等待线程池完成所有任务
-        QThreadPool::globalInstance()->waitForDone(5000);  // 添加超时时间防止死锁
-        qDebug() << "All training tasks completed or timed out";
+    // 释放OpenCLManager
+    if (openclManager != nullptr) {
+        delete openclManager;
+        openclManager = nullptr;
     }
-
-    // 清除缓存
-    expectimaxCache.clear();
-    bitboardCache.clear();
-
-    // 释放任何其他资源
-    QThreadPool::globalInstance()->clear();
-
-    qDebug() << "Auto object destroyed successfully";
 }
 
-// 设置是否使用学习到的参数
-void Auto::setUseLearnedParams(bool use) {
-    useLearnedParams = use;
-}
+// BitBoard操作：将QVector<QVector<int>>转换为BitBoard
+BitBoard Auto::convertToBitBoard(QVector<QVector<int>> const& board) const {
+    BitBoard result = 0;
 
-// 获取是否使用学习到的参数
-bool Auto::getUseLearnedParams() const {
-    return useLearnedParams;
-}
-
-// 获取策略参数
-QVector<double> Auto::getStrategyParams() const {
-    return strategyParams;
-}
-
-// findBestMove: 找出最佳移动方向
-int Auto::findBestMove(QVector<QVector<int>> const& board) {
-    // 检查棋盘上的最大值
-    int maxValue = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (board[i][j] > maxValue) {
-                maxValue = board[i][j];
+            // 计算当前位置的值
+            int value = board[i][j];
+
+            // 计算对应的位值（0表示空，1-15表示2^1到2^15）
+            int bitValue = 0;
+            if (value > 0) {
+                bitValue = static_cast<int>(std::log2(value));
             }
+
+            // 将值放入BitBoard的对应位置
+            // 每个格子用4位表示，总共16个格子，需要64位
+            result |= static_cast<BitBoard>(bitValue) << ((i * 4 + j) * 4);
         }
     }
 
-    // 如果棋盘上有高级方块，尝试使用位棋盘实现以提高性能
-    // 但是如果失败，则回退到标准方法
-    if (maxValue >= 2048) {
-        // 清除缓存以确保最新的计算结果
-        clearExpectimaxCache();
-
-        // 初始化预计算表（如果还没有初始化）
-        static bool tablesInitialized = false;
-        if (!tablesInitialized) {
-            initTables();
-            tablesInitialized = true;
-        }
-
-        // 尝试使用位棋盘实现的最佳移动函数
-        try {
-            int bestMove = getBestMoveBitBoard(board);
-
-            // 如果位棋盘方法没有找到有效移动，回退到标准方法
-            if (bestMove != -1) {
-                qDebug() << "Using BitBoard method with best move:" << bestMove;
-                return bestMove;
-            }
-            qDebug() << "BitBoard method failed to find a valid move, falling back to standard method";
-        } catch (std::exception const& e) {
-            qDebug() << "Exception in BitBoard method:" << e.what() << ", falling back to standard method";
-        } catch (...) {
-            qDebug() << "Unknown exception in BitBoard method, falling back to standard method";
-        }
-        // 如果到达这里，说明位棋盘方法失败，继续使用标准方法
-    }
-
-    int bestScore     = -1;
-    int bestDirection = -1;
-
-    // 尝试每个方向，计算移动后的棋盘评分
-    for (int direction = 0; direction < 4; ++direction) {
-        // 创建棋盘副本
-        QVector<QVector<int>> boardCopy = board;
-
-        // 模拟移动
-        int moveScore = 0;
-        bool moved    = simulateMove(boardCopy, direction, moveScore);
-
-        // 如果这个方向可以移动，计算移动后的棋盘评分
-        if (moved) {
-            int score = 0;
-
-            // 无论是否使用学习参数，都使用相同的评估方法，只是参数不同
-            // 先进行基础评估
-            score = evaluateWithParams(boardCopy, useLearnedParams ? strategyParams : defaultParams) + moveScore;
-
-            // 使用expectimax算法进行深度为3的搜索
-            int simulationScore  = expectimax(boardCopy, 3, false);
-            score               += simulationScore;
-
-            if (score > bestScore) {
-                bestScore     = score;
-                bestDirection = direction;
-            }
-        }
-    }
-
-    // 如果没有有效移动，随机选择一个方向
-    if (bestDirection == -1) {
-        bestDirection = rand() % 4;  // 随机选择一个方向
-    }
-
-    return bestDirection;
+    return result;
 }
 
-// evaluateBoard: 评估棋盘状态
-int Auto::evaluateBoard(QVector<QVector<int>> const& boardState) {
-    int score = 0;
+// BitBoard操作：将BitBoard转换为QVector<QVector<int>>
+QVector<QVector<int>> Auto::convertFromBitBoard(BitBoard board) const {
+    QVector<QVector<int>> result(4, QVector<int>(4, 0));
 
-    // 策略：高分数方块尽量放在角落，并保持递减排列
-
-    // 1. 计算空格数量，空格越多越好
-    int emptyCount = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                emptyCount++;
+            // 从BitBoard中提取当前位置的值
+            int bitValue = (board >> ((i * 4 + j) * 4)) & 0xF;
+
+            // 转换为实际值（2^bitValue）
+            int value = 0;
+            if (bitValue > 0) {
+                value = 1 << bitValue;
             }
+
+            result[i][j] = value;
         }
     }
-    score += emptyCount * 10;  // 每个空格给10分
 
-    // 2. 奖励角落有高分数方块
-    // 右下角最高分
-    if (boardState[3][3] > 0) {
-        score += boardState[3][3] * 2;
+    return result;
+}
+
+// 获取指定位置的值
+int Auto::getTileValue(BitBoard board, int row, int col) const {
+    int bitValue = (board >> ((row * 4 + col) * 4)) & 0xF;
+    if (bitValue == 0) {
+        return 0;
+    }
+    return 1 << bitValue;
+}
+
+// 设置指定位置的值
+void Auto::setTileValue(BitBoard& board, int row, int col, int value) {
+    // 清除原有位置的值
+    board &= ~(static_cast<BitBoard>(0xF) << ((row * 4 + col) * 4));
+
+    // 计算新值的位表示
+    int bitValue = 0;
+    if (value > 0) {
+        bitValue = static_cast<int>(std::log2(value));
     }
 
-    // 3. 奖励相邻方块数值递减排列
-    // 检查行
+    // 设置新值
+    board |= static_cast<BitBoard>(bitValue) << ((row * 4 + col) * 4);
+}
+
+// 获取空格数量
+int Auto::getEmptyTileCount(BitBoard board) const {
+    int count = 0;
     for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            // 如果相邻方块有递减关系，加分
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0 && boardState[i][j] >= boardState[i][j + 1]) {
-                score += std::min(boardState[i][j], boardState[i][j + 1]);
+        for (int j = 0; j < 4; ++j) {
+            if (getTileValue(board, i, j) == 0) {
+                count++;
             }
         }
     }
+    return count;
+}
 
-    // 检查列
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            // 如果相邻方块有递减关系，加分
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0 && boardState[i][j] >= boardState[i + 1][j]) {
-                score += std::min(boardState[i][j], boardState[i + 1][j]);
-            }
+// 获取最大方块值
+int Auto::getMaxTile(BitBoard board) const {
+    int maxTile = 0;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            maxTile = std::max(maxTile, getTileValue(board, i, j));
         }
     }
+    return maxTile;
+}
 
-    return score;
+// 检查是否可以向指定方向移动
+bool Auto::canMove(BitBoard board, int direction) const {
+    // 创建一个临时棋盘副本
+    BitBoard newBoard = makeMove(board, direction);
+
+    // 如果移动后的棋盘与原棋盘不同，则可以移动
+    return newBoard != board;
 }
 
 // 检查游戏是否结束
-bool Auto::isGameOver(QVector<QVector<int>> const& boardState) {
-    // 检查是否有空格
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                return false;  // 有空格，游戏未结束
-            }
+bool Auto::isGameOver(BitBoard board) const {
+    // 如果还有空格，游戏未结束
+    if (getEmptyTileCount(board) > 0) {
+        return false;
+    }
+
+    // 检查是否可以向任何方向移动
+    for (int dir = 0; dir < 4; ++dir) {
+        if (canMove(board, dir)) {
+            return false;
         }
     }
 
-    // 检查是否有相邻相同的方块
-    // 检查行
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] == boardState[i][j + 1]) {
-                return false;  // 有相邻相同的方块，游戏未结束
-            }
-        }
-    }
-
-    // 检查列
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] == boardState[i + 1][j]) {
-                return false;  // 有相邻相同的方块，游戏未结束
-            }
-        }
-    }
-
-    return true;  // 没有空格且没有相邻相同的方块，游戏结束
+    // 没有空格且不能移动，游戏结束
+    return true;
 }
 
-// 计算合并分数 - 评估棋盘上可能的合并操作
-double Auto::calculateMergeScore(QVector<QVector<int>> const& boardState) {
-    double mergeScore = 0;
-
-    // 检查行上的合并可能性
+// 检查是否达到2048（获胜）
+bool Auto::hasWon(BitBoard board) const {
+    // 检查是否有任何方块达到2048
     for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i][j + 1]) {
-                // 对于高值方块，给予更高的奖励
-                double tileValue  = boardState[i][j];
-                double logValue   = log2(tileValue);
-                mergeScore       += tileValue * (logValue / 10.0) * 2.0;
+        for (int j = 0; j < 4; ++j) {
+            if (getTileValue(board, i, j) >= 2048) {
+                return true;
             }
         }
     }
-
-    // 检查列上的合并可能性
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i + 1][j]) {
-                double tileValue  = boardState[i][j];
-                double logValue   = log2(tileValue);
-                mergeScore       += tileValue * (logValue / 10.0) * 2.0;
-            }
-        }
-    }
-
-    // 检查相邻的递增序列（如 2-4-8）
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0 && boardState[i][j + 2] > 0) {
-                if (boardState[i][j + 1] == 2 * boardState[i][j] && boardState[i][j + 2] == 2 * boardState[i][j + 1]) {
-                    // 奖励递增序列
-                    mergeScore += boardState[i][j + 2] * 0.5;
-                }
-            }
-        }
-    }
-
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 2; ++i) {
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0 && boardState[i + 2][j] > 0) {
-                if (boardState[i + 1][j] == 2 * boardState[i][j] && boardState[i + 2][j] == 2 * boardState[i + 1][j]) {
-                    // 奖励递增序列
-                    mergeScore += boardState[i + 2][j] * 0.5;
-                }
-            }
-        }
-    }
-
-    return mergeScore;
+    return false;
 }
 
-// 高级模式评估 - 专门处理超过2048的复杂情况
-int Auto::evaluateAdvancedPattern(QVector<QVector<int>> const& boardState) {
-    int score    = 0;
-    int maxValue = 0;
-    int maxRow = 0, maxCol = 0;
-
-    // 找出最大值及其位置
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
-            }
-        }
-    }
-
-    // 如果最大值小于2048，使用普通评估函数
-    if (maxValue < 2048) {
-        return evaluateBoardAdvanced(boardState);
-    }
-
-    // 对于超过2048的情况，使用更复杂的评估策略
-
-    // 1. 蛇形模式权重矩阵 - 为了处理高级棋盘状态
-    // 定义蛇形路径的权重矩阵，从左上角开始蛇形形式排列
-    int const snakePattern[4][4] = {{16, 15, 14, 13}, {9, 10, 11, 12}, {8, 7, 6, 5}, {1, 2, 3, 4}};
-
-    // 2. 计算蛇形模式得分
-    int patternScore = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > 0) {
-                // 对于高值方块，给予更高的权重
-                double tileValue  = boardState[i][j];
-                double logValue   = log2(tileValue);
-                patternScore     += tileValue * snakePattern[i][j] * (logValue / 11.0);  // 11 = log2(2048)
-            }
-        }
-    }
-    score += patternScore * 2;  // 增加模式权重
-
-    // 3. 空格数量权重 - 对于高级棋盘更重要
-    int emptyCount = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                emptyCount++;
-            }
-        }
-    }
-    // 空格数量的权重与棋盘填充程度相关，棋盘越满空格越重要
-    score += emptyCount * (16 - emptyCount) * 50;  // 大幅增加空格权重
-
-    // 4. 平滑度权重 - 相邻方块数值差异越小越好
-    double smoothness = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0) {
-                // 使用对数差异来减少大数值之间的差异惩罚
-                double logVal1  = log2(boardState[i][j]);
-                double logVal2  = log2(boardState[i][j + 1]);
-                smoothness     -= std::abs(logVal1 - logVal2) * 4.0;
-            }
-        }
-    }
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0) {
-                double logVal1  = log2(boardState[i][j]);
-                double logVal2  = log2(boardState[i + 1][j]);
-                smoothness     -= std::abs(logVal1 - logVal2) * 4.0;
-            }
-        }
-    }
-    score += static_cast<int>(smoothness * 40);  // 增加平滑度权重
-
-    // 5. 单调性权重 - 方块数值沿某个方向单调递增或递减
-    double monotonicity = 0;
-
-    // 检查行的单调性 - 使用对数值
-    for (int i = 0; i < 4; ++i) {
-        double current     = 0;
-        double left_score  = 0;
-        double right_score = 0;
-
-        for (int j = 0; j < 4; ++j) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            if (value > 0) {
-                if (current > 0) {
-                    if (current > value) {
-                        left_score += (current - value) * 2;  // 增加左向单调性权重
-                    } else {
-                        right_score += (value - current) * 2;  // 增加右向单调性权重
-                    }
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(left_score, right_score);
-    }
-
-    // 检查列的单调性 - 使用对数值
-    for (int j = 0; j < 4; ++j) {
-        double current    = 0;
-        double up_score   = 0;
-        double down_score = 0;
-
-        for (int i = 0; i < 4; ++i) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            if (value > 0) {
-                if (current > 0) {
-                    if (current > value) {
-                        up_score += (current - value) * 2;  // 增加上向单调性权重
-                    } else {
-                        down_score += (value - current) * 2;  // 增加下向单调性权重
-                    }
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(up_score, down_score);
-    }
-
-    score -= static_cast<int>(monotonicity * 60);  // 单调性是负分，越小越好
-
-    // 6. 合并可能性 - 奖励相邻相同值
-    double mergeScore  = calculateMergeScore(boardState);
-    score             += static_cast<int>(mergeScore * 20);
-
-    // 7. 游戏结束检测 - 如果游戏即将结束，给予大量惩罚
-    if (isGameOver(boardState)) {
-        score -= 500000;  // 大幅惩罚游戏结束状态
-    }
-
-    return score;
-}
-
-// evaluateBoardAdvanced: 高级评估棋盘状态
-int Auto::evaluateBoardAdvanced(QVector<QVector<int>> const& boardState) {
+// 计算当前棋盘的分数
+int Auto::getScore(BitBoard board) const {
     int score = 0;
-
-    // 1. 空格数量权重 - 空格越多越好
-    int emptyCount = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                emptyCount++;
-            }
-        }
-    }
-    // 空格数量的权重与棋盘填充程度相关，棋盘越满空格越重要
-    score += emptyCount * (16 - emptyCount) * 20;  // 增加空格权重
-
-    // 2. 角落策略 - 使用权重矩阵
-    // 定义权重矩阵，优先将大数放在角落，特别是左上角
-    int const weightMatrix[4][4] = {{16, 15, 14, 13}, {9, 10, 11, 12}, {8, 7, 6, 5}, {1, 2, 3, 4}};
-
-    // 计算权重得分
-    int weightScore = 0;
-    int maxValue    = 0;
-    int maxRow = 0, maxCol = 0;
-
-    // 找出最大值及其位置
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
-            }
-            // 根据权重矩阵计算得分
-            if (boardState[i][j] > 0) {
-                weightScore += boardState[i][j] * weightMatrix[i][j];
-            }
-        }
-    }
-
-    // 如果最大值在左上角，给予额外奖励
-    if (maxRow == 0 && maxCol == 0) {
-        weightScore += maxValue * 4;
-    }
-    // 如果最大值在任意角落，也给予奖励
-    else if ((maxRow == 0 || maxRow == 3) && (maxCol == 0 || maxCol == 3)) {
-        weightScore += maxValue * 2;
-    }
-
-    score += weightScore;
-
-    // 3. 平滑度权重 - 相邻方块数值差异越小越好
-    int smoothness = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0) {
-                // 使用对数差异来减少大数值之间的差异惩罚
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i][j + 1] > 0 ? log2(boardState[i][j + 1]) : 0;
-                smoothness     -= abs(logVal1 - logVal2) * 2.0;
-            }
-        }
-    }
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0) {
-                // 使用对数差异
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i + 1][j] > 0 ? log2(boardState[i + 1][j]) : 0;
-                smoothness     -= abs(logVal1 - logVal2) * 2.0;
-            }
-        }
-    }
-    score += smoothness * 30;  // 增加平滑度权重
-
-    // 4. 单调性权重 - 方块数值沿某个方向单调递增或递减
-    double monotonicity = 0;
-
-    // 检查行的单调性 - 使用对数值
-    for (int i = 0; i < 4; ++i) {
-        double current     = 0;
-        double left_score  = 0;
-        double right_score = 0;
-
-        for (int j = 0; j < 4; ++j) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
+            int value = getTileValue(board, i, j);
             if (value > 0) {
-                // 计算左向单调性
-                if (current > value) {
-                    left_score += current - value;
-                } else {
-                    right_score += value - current;
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(left_score, right_score);
-    }
-
-    // 检查列的单调性 - 使用对数值
-    for (int j = 0; j < 4; ++j) {
-        double current    = 0;
-        double up_score   = 0;
-        double down_score = 0;
-
-        for (int i = 0; i < 4; ++i) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            if (value > 0) {
-                // 计算上向单调性
-                if (current > value) {
-                    up_score += current - value;
-                } else {
-                    down_score += value - current;
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(up_score, down_score);
-    }
-
-    score -= monotonicity * 50;  // 单调性是负分，越小越好
-
-    // 5. 合并可能性 - 奖励相邻相同值
-    int mergeScore = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i][j + 1]) {
-                mergeScore += boardState[i][j];
+                // 分数计算：每个方块的值 * log2(值)
+                score += value * (std::log2(value) - 1);
             }
         }
     }
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i + 1][j]) {
-                mergeScore += boardState[i][j];
-            }
-        }
-    }
-    score += mergeScore * 10;
-
-    // 6. 大数值聚集 - 奖励大数值聚集在一起
-    int clusterScore = 0;
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            int cellValue = boardState[i][j];
-            if (cellValue > 0) {
-                // 检查右边和下边的方块
-                if (boardState[i][j + 1] > 0) {
-                    clusterScore += std::min(cellValue, boardState[i][j + 1]);
-                }
-                if (boardState[i + 1][j] > 0) {
-                    clusterScore += std::min(cellValue, boardState[i + 1][j]);
-                }
-            }
-        }
-    }
-    score += clusterScore;
-
     return score;
 }
 
-// simulateMove: 模拟移动
-bool Auto::simulateMove(QVector<QVector<int>>& boardState, int direction, int& score) {
-    bool moved = false;
-    score      = 0;
+// 向指定方向移动棋盘
+BitBoard Auto::makeMove(BitBoard board, int direction) const {
+    BitBoard newBoard = board;
+    bool moved        = false;
 
-    if (direction == 0) {  // 向上
-        for (int col = 0; col < 4; ++col) {
-            for (int row = 1; row < 4; ++row) {
-                if (boardState[row][col] != 0) {
-                    int r = row;
-                    while (r > 0 && boardState[r - 1][col] == 0) {
-                        boardState[r - 1][col] = boardState[r][col];
-                        boardState[r][col]     = 0;
-                        r--;
-                        moved = true;
-                    }
-                    if (r > 0 && boardState[r - 1][col] == boardState[r][col]) {
-                        boardState[r - 1][col] *= 2;
-                        score                  += boardState[r - 1][col];
-                        boardState[r][col]      = 0;
-                        moved                   = true;
-                    }
-                }
-            }
-        }
-    } else if (direction == 1) {  // 向右
-        for (int row = 0; row < 4; ++row) {
-            for (int col = 2; col >= 0; --col) {
-                if (boardState[row][col] != 0) {
-                    int c = col;
-                    while (c < 3 && boardState[row][c + 1] == 0) {
-                        boardState[row][c + 1] = boardState[row][c];
-                        boardState[row][c]     = 0;
-                        c++;
-                        moved = true;
-                    }
-                    if (c < 3 && boardState[row][c + 1] == boardState[row][c]) {
-                        boardState[row][c + 1] *= 2;
-                        score                  += boardState[row][c + 1];
-                        boardState[row][c]      = 0;
-                        moved                   = true;
+    // 根据方向执行移动
+    switch (direction) {
+        case 0:  // 上
+            for (int j = 0; j < 4; ++j) {
+                // 提取当前列
+                int col[4] = {getTileValue(newBoard, 0, j),
+                              getTileValue(newBoard, 1, j),
+                              getTileValue(newBoard, 2, j),
+                              getTileValue(newBoard, 3, j)};
+
+                // 移动并合并
+                bool colMoved = moveLine(col);
+
+                // 更新棋盘
+                if (colMoved) {
+                    moved = true;
+                    for (int i = 0; i < 4; ++i) {
+                        setTileValue(newBoard, i, j, col[i]);
                     }
                 }
             }
-        }
-    } else if (direction == 2) {  // 向下
-        for (int col = 0; col < 4; ++col) {
-            for (int row = 2; row >= 0; --row) {
-                if (boardState[row][col] != 0) {
-                    int r = row;
-                    while (r < 3 && boardState[r + 1][col] == 0) {
-                        boardState[r + 1][col] = boardState[r][col];
-                        boardState[r][col]     = 0;
-                        r++;
-                        moved = true;
-                    }
-                    if (r < 3 && boardState[r + 1][col] == boardState[r][col]) {
-                        boardState[r + 1][col] *= 2;
-                        score                  += boardState[r + 1][col];
-                        boardState[r][col]      = 0;
-                        moved                   = true;
+            break;
+
+        case 1:  // 右
+            for (int i = 0; i < 4; ++i) {
+                // 提取当前行
+                int row[4] = {getTileValue(newBoard, i, 0),
+                              getTileValue(newBoard, i, 1),
+                              getTileValue(newBoard, i, 2),
+                              getTileValue(newBoard, i, 3)};
+
+                // 反转行，以便使用相同的移动逻辑
+                std::reverse(row, row + 4);
+
+                // 移动并合并
+                bool rowMoved = moveLine(row);
+
+                // 反转回来
+                std::reverse(row, row + 4);
+
+                // 更新棋盘
+                if (rowMoved) {
+                    moved = true;
+                    for (int j = 0; j < 4; ++j) {
+                        setTileValue(newBoard, i, j, row[j]);
                     }
                 }
             }
-        }
-    } else if (direction == 3) {  // 向左
-        for (int row = 0; row < 4; ++row) {
-            for (int col = 1; col < 4; ++col) {
-                if (boardState[row][col] != 0) {
-                    int c = col;
-                    while (c > 0 && boardState[row][c - 1] == 0) {
-                        boardState[row][c - 1] = boardState[row][c];
-                        boardState[row][c]     = 0;
-                        c--;
-                        moved = true;
-                    }
-                    if (c > 0 && boardState[row][c - 1] == boardState[row][c]) {
-                        boardState[row][c - 1] *= 2;
-                        score                  += boardState[row][c - 1];
-                        boardState[row][c]      = 0;
-                        moved                   = true;
+            break;
+
+        case 2:  // 下
+            for (int j = 0; j < 4; ++j) {
+                // 提取当前列
+                int col[4] = {getTileValue(newBoard, 0, j),
+                              getTileValue(newBoard, 1, j),
+                              getTileValue(newBoard, 2, j),
+                              getTileValue(newBoard, 3, j)};
+
+                // 反转列，以便使用相同的移动逻辑
+                std::reverse(col, col + 4);
+
+                // 移动并合并
+                bool colMoved = moveLine(col);
+
+                // 反转回来
+                std::reverse(col, col + 4);
+
+                // 更新棋盘
+                if (colMoved) {
+                    moved = true;
+                    for (int i = 0; i < 4; ++i) {
+                        setTileValue(newBoard, i, j, col[i]);
                     }
                 }
+            }
+            break;
+
+        case 3:  // 左
+            for (int i = 0; i < 4; ++i) {
+                // 提取当前行
+                int row[4] = {getTileValue(newBoard, i, 0),
+                              getTileValue(newBoard, i, 1),
+                              getTileValue(newBoard, i, 2),
+                              getTileValue(newBoard, i, 3)};
+
+                // 移动并合并
+                bool rowMoved = moveLine(row);
+
+                // 更新棋盘
+                if (rowMoved) {
+                    moved = true;
+                    for (int j = 0; j < 4; ++j) {
+                        setTileValue(newBoard, i, j, row[j]);
+                    }
+                }
+            }
+            break;
+        default:
+            // 无效方向，不做任何操作
+            break;
+    }
+
+    // 如果没有移动，返回原始棋盘
+    if (!moved) {
+        return board;
+    }
+
+    return newBoard;
+}
+
+// 移动并合并一行或一列
+bool Auto::moveLine(int line[4]) const {
+    bool moved = false;
+
+    // 移动非零元素到前面
+    for (int i = 0; i < 3; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            if (line[i] == 0 && line[j] != 0) {
+                line[i] = line[j];
+                line[j] = 0;
+                moved   = true;
+                j       = i;  // 重新检查当前位置
+            }
+        }
+    }
+
+    // 合并相同的元素
+    for (int i = 0; i < 3; ++i) {
+        if (line[i] != 0 && line[i] == line[i + 1]) {
+            line[i]     *= 2;
+            line[i + 1]  = 0;
+            moved        = true;
+        }
+    }
+
+    // 再次移动非零元素到前面
+    for (int i = 0; i < 3; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            if (line[i] == 0 && line[j] != 0) {
+                line[i] = line[j];
+                line[j] = 0;
+                moved   = true;
+                j       = i;  // 重新检查当前位置
             }
         }
     }
@@ -1022,1315 +341,858 @@ bool Auto::simulateMove(QVector<QVector<int>>& boardState, int direction, int& s
     return moved;
 }
 
-// monteCarloSimulation: 蒙特卡洛模拟
-int Auto::monteCarloSimulation(QVector<QVector<int>> const& boardState, int depth) {
-    if (depth <= 0) {
-        return evaluateBoardAdvanced(boardState);
-    }
-
-    int bestScore = -1;
-
-    // 尝试每个方向
-    for (int direction = 0; direction < 4; ++direction) {
-        QVector<QVector<int>> boardCopy = boardState;
-        int moveScore                   = 0;
-
-        // 模拟移动
-        bool moved = simulateMove(boardCopy, direction, moveScore);
-
-        if (moved) {
-            // 计算当前移动的分数
-            int currentScore = moveScore;
-
-            // 找出空格
-            QVector<QPair<int, int>> emptyTiles;
-            for (int i = 0; i < 4; ++i) {
-                for (int j = 0; j < 4; ++j) {
-                    if (boardCopy[i][j] == 0) {
-                        emptyTiles.append(qMakePair(i, j));
-                    }
-                }
-            }
-
-            if (!emptyTiles.isEmpty()) {
-                // 对于每个空格，模拟生成新方块
-                int totalFutureScore = 0;
-                int simCount         = 0;
-
-                // 为了提高效率，只随机选择一部分空格进行模拟
-                int maxSimulations = std::min(3, static_cast<int>(emptyTiles.size()));
-                for (int sim = 0; sim < maxSimulations; sim++) {
-                    // 随机选择一个空位置
-                    int randomIndex = rand() % emptyTiles.size();
-                    int row         = emptyTiles[randomIndex].first;
-                    int col         = emptyTiles[randomIndex].second;
-
-                    // 模拟生成2和4两种情况
-                    for (int newTile : {2, 4}) {
-                        QVector<QVector<int>> newBoardCopy = boardCopy;
-                        newBoardCopy[row][col]             = newTile;
-
-                        // 递归模拟下一步最佳移动
-                        int futureScore = expectimax(newBoardCopy, depth - 1, false);
-
-                        // 加权平均：2出现90%的概率，4出现10%的概率
-                        double probability  = (newTile == 2) ? 0.9 : 0.1;
-                        totalFutureScore   += static_cast<int>(futureScore * probability);
-                        simCount++;
-                    }
-                }
-
-                // 计算平均未来分数
-                if (simCount > 0) {
-                    currentScore += totalFutureScore / simCount;
-                }
-            }
-
-            // 更新最佳分数
-            if (currentScore > bestScore) {
-                bestScore = currentScore;
-            }
-        }
-    }
-
-    return bestScore > 0 ? bestScore : 0;
-}
-
-// 清除expectimax缓存
-void Auto::clearExpectimaxCache() {
-    expectimaxCache.clear();
-    bitboardCache.clear();
-}
-
-// 初始化位棋盘的预计算表
-void Auto::initTables() {
-    // 使用静态标志确保表只初始化一次
-    static std::atomic<bool> tablesInitialized(false);
-    static QMutex initMutex;
-
-    // 如果表已经初始化，则直接返回
-    if (tablesInitialized.load()) {
-        return;
-    }
-
-    // 使用互斥锁确保只有一个线程初始化表
-    QMutexLocker locker(&initMutex);
-
-    // 再次检查，防止多个线程同时通过第一次检查
-    if (tablesInitialized.load()) {
-        return;
-    }
-
-    // 初始化移动表
-    for (int row = 0; row < 65536; ++row) {
-        // 左移表
-        uint16_t line[4] = {static_cast<uint16_t>((row >> 0) & 0xF),
-                            static_cast<uint16_t>((row >> 4) & 0xF),
-                            static_cast<uint16_t>((row >> 8) & 0xF),
-                            static_cast<uint16_t>((row >> 12) & 0xF)};
-
-        // 模拟左移
-        uint16_t result = 0;
-        int score       = 0;
-        bool merged     = false;
-
-        // 先将所有非零元素移动到最左边
-        for (int i = 0; i < 4; ++i) {
-            if (line[i] == 0) {
-                continue;
-            }
-
-            // 找到最左边的空位置
-            int j = i;
-            while (j > 0 && line[j - 1] == 0) {
-                line[j - 1] = line[j];
-                line[j]     = 0;
-                j--;
-                merged = true;
-            }
-
-            // 如果可以合并
-            if (j > 0 && line[j - 1] == line[j] && line[j] != 0) {
-                line[j - 1]++;  // 对数增加1，相当于值翻倍
-                line[j]  = 0;
-                score   += (1 << line[j - 1]);  // 计算分数
-                merged   = true;
-            }
-        }
-
-        // 将结果打包回16位整数
-        result = static_cast<uint16_t>(line[0] | (line[1] << 4) | (line[2] << 8) | (line[3] << 12));
-
-        // 存储到移动表中
-        row_left_table[row] = result;
-
-        // 右移可以通过左移的逆操作实现
-        uint16_t rev_row     = reverse_row(row);
-        uint16_t rev_result  = reverse_row(row_left_table[rev_row]);
-        row_right_table[row] = rev_result;
-
-        // 上移和下移可以通过转置实现
-        BitBoard row_col   = unpack_col(static_cast<uint16_t>(row));
-        BitBoard row_left  = unpack_col(row_left_table[row]);
-        BitBoard row_right = unpack_col(row_right_table[row]);
-
-        col_up_table[row]   = transpose(row_left);
-        col_down_table[row] = transpose(row_right);
-
-        // 计算评分表
-        float heur_score = 0.0f;
-        float tile_score = 0.0f;
-
-        // 计算每个位置的分数
-        for (int i = 0; i < 4; ++i) {
-            int tile_value = line[i];
-            if (tile_value > 0) {
-                // 使用对数值作为分数
-                tile_score += (1 << tile_value);
-
-                // 奖励递减排列
-                if (i > 0 && line[i - 1] > line[i]) {
-                    heur_score += (line[i - 1] - line[i]) * 0.5f;
-                }
-            }
-        }
-
-        heur_score_table[row] = heur_score;
-        score_table[row]      = tile_score;
-    }
-
-    // 标记表已初始化
-    tablesInitialized.store(true);
-
-    // 在主线程中输出调试信息
-    QMetaObject::invokeMethod(
-        QApplication::instance(), []() { qDebug() << "BitBoard tables initialized"; }, Qt::QueuedConnection);
-}
-
-// 将标准棋盘转换为位棋盘
-BitBoard Auto::convertToBitBoard(QVector<QVector<int>> const& boardState) {
-    BitBoard board = 0;
-
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            int val = boardState[i][j];
-            int pos = 0;
-
-            // 计算位置的对数值
-            if (val > 0) {
-                pos = static_cast<int>(log2(val));
-            }
-
-            // 将值放入位棋盘
-            board |= (BitBoard)(pos) << ((i * 4 + j) * 4);
-        }
-    }
-
-    return board;
-}
-
-// 将位棋盘转换回标准棋盘
-QVector<QVector<int>> Auto::convertFromBitBoard(BitBoard board) {
-    QVector<QVector<int>> result(4, QVector<int>(4, 0));
-
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            int pos = (i * 4 + j) * 4;
-            int val = (board >> pos) & 0xf;
-
-            // 将对数值转换回实际值
-            if (val > 0) {
-                result[i][j] = 1 << val;
-            } else {
-                result[i][j] = 0;
-            }
-        }
-    }
-
-    return result;
-}
-
-// 评估位棋盘
-int Auto::evaluateBitBoard(BitBoard board) {
-    // 使用预计算的表格进行评估
-    float score = 0.0f;
-
-    // 行评估
-    score += heur_score_table[(board >> 0) & ROW_MASK];
-    score += heur_score_table[(board >> 16) & ROW_MASK];
-    score += heur_score_table[(board >> 32) & ROW_MASK];
-    score += heur_score_table[(board >> 48) & ROW_MASK];
-
-    // 列评估（转置后）
-    BitBoard t  = transpose(board);
-    score      += heur_score_table[(t >> 0) & ROW_MASK];
-    score      += heur_score_table[(t >> 16) & ROW_MASK];
-    score      += heur_score_table[(t >> 32) & ROW_MASK];
-    score      += heur_score_table[(t >> 48) & ROW_MASK];
-
-    // 空格数量奖励
-    int emptyTiles  = countEmptyTiles(board);
-    score          += emptyTiles * 30.0f;
-
-    return static_cast<int>(score);
-}
-
-// 模拟移动位棋盘 - 使用直接位操作以提高性能
-bool Auto::simulateMoveBitBoard(BitBoard& board, int direction, int& score) {
-    BitBoard oldBoard = board;
-    score             = 0;
-
-    // 使用直接位操作执行移动
-    switch (direction) {
-        case 0:  // 上
-            board = execute_move_0(board);
-            break;
-        case 1:  // 下
-            board = execute_move_1(board);
-            break;
-        case 2:  // 左
-            board = execute_move_2(board);
-            break;
-        case 3:  // 右
-            board = execute_move_3(board);
-            break;
-        default:
-            qDebug() << "Invalid direction:" << direction;
-            return false;
-    }
-
-    // 如果棋盘没有变化，说明这个方向不能移动
-    if (board == oldBoard) {
-        qDebug() << "BitBoard move in direction" << direction << "did not change the board";
-        return false;
-    }
-
-    // 计算分数 - 分数来自于合并的方块
-    BitBoard diff = oldBoard ^ board;
-    BitBoard temp = diff;
-    while (temp != 0U) {
-        int pos = __builtin_ctzll(temp) / 4 * 4;
-        int val = (board >> pos) & 0xf;
-        if (val > 1) {  // 如果发生了合并
-            score += (1 << val);
-        }
-        temp &= ~(0xfULL << pos);
-    }
-
-    return true;
-}
-
-// 使用位棋盘的expectimax算法
-int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
-    // 检查缓存
-    BitBoardState state{board, depth, isMaxPlayer};
-    auto cacheIt = bitboardCache.find(state);
-    if (cacheIt != bitboardCache.end()) {
-        return cacheIt->second;
-    }
-
-    // 绝对深度限制 - 防止过深递归
-    static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
-    depth                               = std::min(depth, MAX_ABSOLUTE_DEPTH);
-
-    // 如果到达最大深度，返回评估分数
-    if (depth <= 0) {
-        // 直接使用位棋盘评估函数
-        int score            = evaluateBitBoard(board);
-        bitboardCache[state] = score;  // 缓存结果
-        return score;
-    }
-
-    // 检测游戏是否结束
-    if (isGameOverBitBoard(board)) {
-        int score            = -500000;  // 游戏结束给予大量惩罚
-        bitboardCache[state] = score;
-        return score;
-    }
-
-    // 快速检测空格数
-    int emptyCount = countEmptyTiles(board);
-
-    // 获取最大值
-    int maxValue = 0;
-    for (int i = 0; i < 16; i++) {
-        int shift = i * 4;
-        int value = (board >> shift) & 0xF;
-        if (value > maxValue) {
-            maxValue = value;
-        }
-    }
-    // 将对数值转换为实际值
-    maxValue = maxValue > 0 ? (1 << maxValue) : 0;
-
-    // 对于高级棋盘，减少搜索深度以提高性能
-    int extraDepth = 0;
-    if (maxValue >= 2048) {  // 2048 = 2^11
-        // 对于高级棋盘，根据空格数量动态调整搜索深度
-        if (emptyCount <= 4) {
-            depth = std::min(depth, 3);  // 空格很少时限制深度
-        } else {
-            extraDepth = 1;  // 空格较多时增加深度
-        }
-    }
-
-    int result = 0;
-    if (isMaxPlayer) {
-        // MAX节点：选择最佳移动
-        int bestScore = -1;
-
-        // 尝试所有可能的移动
-        for (int direction = 0; direction < 4; ++direction) {
-            BitBoard boardCopy = board;
-            int moveScore      = 0;
-
-            bool moved = simulateMoveBitBoard(boardCopy, direction, moveScore);
-
-            if (moved) {
-                // 递归计算期望分数
-                int score = moveScore + expectimaxBitBoard(boardCopy, depth - 1 + extraDepth, false);
-                bestScore = std::max(bestScore, score);
-            }
-        }
-
-        result = bestScore > 0 ? bestScore : 0;
-    } else {
-        // CHANCE节点：随机生成新方块
-        // 如果没有空格，返回评估分数
-        if (emptyCount == 0) {
-            int score            = evaluateBitBoard(board);
-            bitboardCache[state] = score;
-            return score;
-        }
-
-        // 优化：对于高级棋盘，只模拟一个空格以提高性能
-        int tilesToSimulate = 1;
-        if (maxValue < 2048 && emptyCount > 1) {
-            tilesToSimulate = std::min(2, emptyCount);
-        }
-
-        double totalScore = 0.0;
-
-        // 找到所有空格位置
-        QVector<QPair<int, int>> emptyPositions;
-        // 直接从位棋盘获取空格位置
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                int pos = (i * 4 + j) * 4;
-                int val = (board >> pos) & 0xF;
-                if (val == 0) {
-                    emptyPositions.append(qMakePair(i, j));
-                    if (emptyPositions.size() >= tilesToSimulate) {
-                        break;
-                    }
-                }
-            }
-            if (emptyPositions.size() >= tilesToSimulate) {
-                break;
-            }
-        }
-
-        // 模拟在空格中放置新方块
-        for (int i = 0; i < tilesToSimulate; ++i) {
-            int row = emptyPositions[i].first;
-            int col = emptyPositions[i].second;
-
-            // 直接在位棋盘上模拟生成2和4
-            BitBoard bitBoardWith2 = board;
-            int pos2               = (row * 4 + col) * 4;
-            // 清零该位置然后设置为2（1对应于位棋盘中的2）
-            bitBoardWith2 &= ~(0xfULL << pos2);
-            bitBoardWith2 |= 1ULL << pos2;
-
-            // 优化：对于高级棋盘，只考虑生成2的情况
-            if (maxValue >= 4096) {  // 4096 = 2^12
-                totalScore += expectimaxBitBoard(bitBoardWith2, depth - 1, true);
-            } else {
-                // 创建生成4的位棋盘
-                BitBoard bitBoardWith4 = board;
-                // 清零该位置然后设置为4（2对应于位棋盘中的4）
-                bitBoardWith4 &= ~(0xfULL << pos2);
-                bitBoardWith4 |= 2ULL << pos2;
-
-                // 90%概率生成2，10%概率生成4
-                totalScore += 0.9 * expectimaxBitBoard(bitBoardWith2, depth - 1, true);
-                totalScore += 0.1 * expectimaxBitBoard(bitBoardWith4, depth - 1, true);
-            }
-        }
-
-        result = static_cast<int>(totalScore / tilesToSimulate);
-    }
-
-    // 缓存结果
-    bitboardCache[state] = result;
-
-    // 限制缓存大小以防止内存溢出
-    if (bitboardCache.size() > 10000) {
-        // 当缓存过大时清除
-        bitboardCache.clear();
-    }
-
-    return result;
-}
-
-// 使用位棋盘优化的getBestMove函数
-int Auto::getBestMoveBitBoard(QVector<QVector<int>> const& boardState) {
-    // 转换为位棋盘
-    BitBoard board = convertToBitBoard(boardState);
-
-    int bestMove       = -1;
-    int bestScore      = -1;
-    int validMoveCount = 0;
-
-    // 尝试所有可能的移动
-    for (int move = 0; move < 4; ++move) {
-        BitBoard boardCopy = board;
-        int moveScore      = 0;
-
-        bool moved = simulateMoveBitBoard(boardCopy, move, moveScore);
-
-        if (moved) {
-            validMoveCount++;
-            // 计算此移动的分数
-            int score = moveScore + expectimaxBitBoard(boardCopy, 3, false);
-            qDebug() << "BitBoard method - Direction:" << move << "Score:" << score;
-
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove  = move;
-            }
-        } else {
-            qDebug() << "BitBoard method - Direction:" << move << "is not valid";
-        }
-    }
-
-    // 如果没有有效移动，返回-1表示失败，让标准方法处理
-    if (bestMove == -1) {
-        qDebug() << "BitBoard method - No valid moves found, returning -1 to fall back to standard method";
-        return -1;
-    }
-
-    // 验证最佳移动是否真的有效
-    QVector<QVector<int>> testBoard = boardState;
-    int testScore                   = 0;
-    bool validMove                  = simulateMove(testBoard, bestMove, testScore);
-
-    if (!validMove) {
-        qDebug() << "BitBoard method selected move" << bestMove
-                 << "but it's not valid when tested with standard method";
-
-        // 尝试标准方法找到有效移动
-        for (int move = 0; move < 4; ++move) {
-            QVector<QVector<int>> moveTestBoard = boardState;
-            int moveTestScore                   = 0;
-            if (simulateMove(moveTestBoard, move, moveTestScore)) {
-                qDebug() << "Found valid move" << move << "using standard method";
-                return move;
-            }
-        }
-
-        return -1;  // 如果标准方法也找不到有效移动，返回-1
-    }
-
-    qDebug() << "BitBoard method - Best move:" << bestMove << "with score:" << bestScore << "(" << validMoveCount
-             << " valid moves)";
-    qDebug() << "Using BitBoard method with best move:" << bestMove;
-
-    return bestMove;
-}
-
-// expectimax: 期望最大算法 - 高效版本
-int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool isMaxPlayer) {
-    // 检查缓存
-    BoardState state{boardState, depth, isMaxPlayer};
-    auto cacheIt = expectimaxCache.find(state);
-    if (cacheIt != expectimaxCache.end()) {
-        return cacheIt->second;
-    }
-
-    // 绝对深度限制 - 防止过深递归
-    static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
-    if (depth > MAX_ABSOLUTE_DEPTH) {
-        depth = MAX_ABSOLUTE_DEPTH;
-    }
-
-    // 如果到达最大深度，返回评估分数
-    if (depth <= 0) {
-        int score              = evaluateAdvancedPattern(boardState);
-        expectimaxCache[state] = score;  // 缓存结果
-        return score;
-    }
-
-    // 检测游戏是否结束
-    if (isGameOver(boardState)) {
-        int score              = -500000;  // 游戏结束给予大量惩罚
-        expectimaxCache[state] = score;
-        return score;
-    }
-
-    // 快速检测最大值和空格数
-    int maxValue   = 0;
-    int emptyCount = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-            }
-            if (boardState[i][j] == 0) {
-                emptyCount++;
-            }
-        }
-    }
-
-    // 对于高级棋盘，减少搜索深度以提高性能
-    int extraDepth = 0;
-    if (maxValue >= 2048) {
-        // 对于高级棋盘，根据空格数量动态调整搜索深度
-        if (emptyCount <= 4) {
-            depth = std::min(depth, 3);  // 空格很少时限制深度
-        } else {
-            extraDepth = 1;  // 空格较多时增加深度
-        }
-    }
-
-    int result = 0;
-    if (isMaxPlayer) {
-        // MAX节点：选择最佳移动
-        int bestScore = -1;
-
-        // 尝试所有可能的移动
-        for (int direction = 0; direction < 4; ++direction) {
-            QVector<QVector<int>> boardCopy = boardState;
-            int moveScore                   = 0;
-
-            bool moved = simulateMove(boardCopy, direction, moveScore);
-
-            if (moved) {
-                // 递归计算期望分数
-                int score = moveScore + expectimax(boardCopy, depth - 1 + extraDepth, false);
-                bestScore = std::max(bestScore, score);
-            }
-        }
-
-        result = bestScore > 0 ? bestScore : 0;
-    } else {
-        // CHANCE节点：随机生成新方块
-        // 如果没有空格，返回评估分数
-        if (emptyCount == 0) {
-            int score              = evaluateBoardAdvanced(boardState);
-            expectimaxCache[state] = score;
-            return score;
-        }
-
-        // 优化：对于高级棋盘，只模拟一个空格以提高性能
-        int tilesToSimulate = 1;
-        if (maxValue < 2048 && emptyCount > 1) {
-            tilesToSimulate = std::min(2, emptyCount);
-        }
-
-        double totalScore = 0.0;
-
-        // 优化空格选择策略
-        QVector<QPair<int, int>> emptyPositions;
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                if (boardState[i][j] == 0) {
-                    emptyPositions.append(qMakePair(i, j));
-                    if (emptyPositions.size() >= tilesToSimulate) {
-                        break;
-                    }
-                }
-            }
-            if (emptyPositions.size() >= tilesToSimulate) {
-                break;
-            }
-        }
-
-        for (int i = 0; i < tilesToSimulate; ++i) {
-            int row = emptyPositions[i].first;
-            int col = emptyPositions[i].second;
-
-            // 模拟生成2和4两种情况
-            QVector<QVector<int>> boardWith2 = boardState;
-            boardWith2[row][col]             = 2;
-
-            // 优化：对于高级棋盘，只考虑生成2的情况
-            if (maxValue >= 4096) {
-                totalScore += expectimax(boardWith2, depth - 1, true);
-            } else {
-                QVector<QVector<int>> boardWith4 = boardState;
-                boardWith4[row][col]             = 4;
-
-                totalScore += 0.9 * expectimax(boardWith2, depth - 1, true);  // 90%概率生成2
-                totalScore += 0.1 * expectimax(boardWith4, depth - 1, true);  // 10%概率生成4
-            }
-        }
-
-        result = static_cast<int>(totalScore / tilesToSimulate);
-    }
-
-    // 缓存结果
-    expectimaxCache[state] = result;
-
-    // 限制缓存大小以防止内存溢出
-    if (expectimaxCache.size() > 10000) {
-        // 当缓存过大时清除
-        expectimaxCache.clear();
-    }
-
-    return result;
-}
-
-// evaluateWithParams: 使用给定参数评估棋盘
-int Auto::evaluateWithParams(QVector<QVector<int>> const& boardState, QVector<double> const& params) {
-    int score = 0;
-
-    // 确保参数数量足够
-    if (params.size() < 5) {
-        return evaluateBoardAdvanced(boardState);  // 如果参数不足，使用默认评估函数
-    }
-
-    // 1. 空格数量权重 - 空格越多越好
-    int emptyCount = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                emptyCount++;
-            }
-        }
-    }
-    score += static_cast<int>(emptyCount * params[0] * 10);
-
-    // 2. 蛇形模式权重 - 使用改进的蛇形模式
-    int const snakePattern[4][4] = {{16, 15, 14, 13}, {9, 10, 11, 12}, {8, 7, 6, 5}, {1, 2, 3, 4}};
-    int snakeScore               = 0;
-
-    // 找出最大值及其位置
-    int maxValue = 0;
-    int maxRow = 0, maxCol = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
-            }
-        }
-    }
-
-    // 根据最大值的位置调整蛇形模式
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > 0) {
-                // 对于高值方块，给予更高的权重
-                double tileValue  = boardState[i][j];
-                double logValue   = log2(tileValue);
-                snakeScore       += static_cast<int>(tileValue * snakePattern[i][j] * (logValue / 11.0));
-            }
-        }
-    }
-    score += static_cast<int>(snakeScore * params[1] / 10);
-
-    // 3. 平滑度权重 - 使用对数差异来减少大数值之间的差异惩罚
-    int smoothness = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0) {
-                // 使用对数差异
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i][j + 1] > 0 ? log2(boardState[i][j + 1]) : 0;
-                smoothness     -= static_cast<int>(std::abs(logVal1 - logVal2) * 2.0);
-            }
-        }
-    }
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0) {
-                // 使用对数差异
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i + 1][j] > 0 ? log2(boardState[i + 1][j]) : 0;
-                smoothness     -= static_cast<int>(std::abs(logVal1 - logVal2) * 2.0);
-            }
-        }
-    }
-    score += static_cast<int>(smoothness * params[2]);
-
-    // 4. 单调性权重 - 改进的单调性计算
-    int monotonicity = 0;
-
-    // 计算行的单调性
-    for (int i = 0; i < 4; ++i) {
-        // 计算左右方向的单调性
-        int left_right = 0;
-        int right_left = 0;
-
-        for (int j = 0; j < 3; ++j) {
-            double curr = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            double next = boardState[i][j + 1] > 0 ? log2(boardState[i][j + 1]) : 0;
-
-            if (curr > next) {
-                left_right += static_cast<int>((curr - next) * 2);
-            } else {
-                right_left += static_cast<int>((next - curr) * 2);
-            }
-        }
-
-        monotonicity += std::min(left_right, right_left);
-    }
-
-    // 计算列的单调性
-    for (int j = 0; j < 4; ++j) {
-        // 计算上下方向的单调性
-        int up_down = 0;
-        int down_up = 0;
-
-        for (int i = 0; i < 3; ++i) {
-            double curr = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            double next = boardState[i + 1][j] > 0 ? log2(boardState[i + 1][j]) : 0;
-
-            if (curr > next) {
-                up_down += static_cast<int>((curr - next) * 2);
-            } else {
-                down_up += static_cast<int>((next - curr) * 2);
-            }
-        }
-
-        monotonicity += std::min(up_down, down_up);
-    }
-
-    score -= static_cast<int>(monotonicity * params[3]);
-
-    // 5. 合并可能性权重 - 奖励相邻相同值
-    double mergeScore  = calculateMergeScore(boardState);
-    score             += static_cast<int>(mergeScore * params[4]);
-
-    // 6. 角落奖励 - 如果最大值在角落，给予额外奖励
-    if ((maxRow == 0 || maxRow == 3) && (maxCol == 0 || maxCol == 3)) {
-        score += static_cast<int>(maxValue * 2);
-    }
-
-    return score;
-}
-
-// simulateFullGame: 模拟完整游戏
-int Auto::simulateFullGame(QVector<double> const& params) {
-    int score   = 0;
-    int maxTile = 0;
-    simulateFullGameDetailed(params, score, maxTile);
-    return score;
-}
-
-// simulateFullGameDetailed: 模拟完整游戏并返回详细信息
-void Auto::simulateFullGameDetailed(QVector<double> const& params, int& score, int& maxTile) {
-    // 初始化模拟棋盘
-    QVector<QVector<int>> simBoard(4, QVector<int>(4, 0));
-    score   = 0;
-    maxTile = 0;
-
-    // 随机生成两个初始方块
+// 添加随机方块（90%概率为2，10%概率为4）
+BitBoard Auto::addRandomTile(BitBoard board) const {
+    // 获取所有空格位置
     QVector<QPair<int, int>> emptyTiles;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            emptyTiles.append(qMakePair(i, j));
-        }
-    }
-
-    // 随机选择两个位置生成初始方块
-    std::random_device rd;
-    std::mt19937 gen(rd());
-
-    for (int i = 0; i < 2; ++i) {
-        std::uniform_int_distribution<> posDis(0, static_cast<int>(emptyTiles.size()) - 1);
-        std::uniform_int_distribution<> valueDis(0, 9);  // 0-8 生成2，9 生成4
-
-        int randomIndex    = posDis(gen);
-        int row            = emptyTiles[randomIndex].first;
-        int col            = emptyTiles[randomIndex].second;
-        simBoard[row][col] = (valueDis(gen) < 9) ? 2 : 4;  // 90%的概率生成2，10%生成4
-        emptyTiles.removeAt(randomIndex);
-    }
-
-    // 模拟游戏过程，直到游戏结束
-    bool gameOver = false;
-    int moveCount = 0;
-    int maxMoves  = 2000;  // 增加最大移动次数，以便能达到2048及以上
-
-    while (!gameOver && moveCount < maxMoves) {
-        // 更新最大砖块值
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                if (simBoard[i][j] > maxTile) {
-                    maxTile = simBoard[i][j];
-                }
-            }
-        }
-
-        // 找出最佳移动方向
-        int bestDirection = -1;
-        int bestScore     = -1;
-
-        // 尝试每个方向
-        for (int direction = 0; direction < 4; ++direction) {
-            QVector<QVector<int>> boardCopy = simBoard;
-            int moveScore                   = 0;
-
-            // 模拟移动
-            bool moved = simulateMove(boardCopy, direction, moveScore);
-
-            if (moved) {
-                // 对于高级棋盘，使用更复杂的评估
-                int evalScore = 0;
-                if (maxTile >= 1024) {
-                    // 对于高级棋盘，使用更复杂的评估和更深的搜索
-                    evalScore = evaluateAdvancedPattern(boardCopy);
-                    // 深度为2的蒙特卡洛模拟
-                    evalScore += monteCarloSimulation(boardCopy, 2);
-                } else {
-                    // 对于低级棋盘，使用参数化评估
-                    evalScore = evaluateWithParams(boardCopy, params);
-                }
-
-                int score = evalScore + moveScore;
-
-                if (score > bestScore) {
-                    bestScore     = score;
-                    bestDirection = direction;
-                }
-            }
-        }
-
-        // 如果没有可用的移动，游戏结束
-        if (bestDirection == -1) {
-            gameOver = true;
-            continue;
-        }
-
-        // 执行最佳移动
-        int moveScore = 0;
-        simulateMove(simBoard, bestDirection, moveScore);
-        score += moveScore;
-        moveCount++;
-
-        // 随机生成新方块
-        emptyTiles.clear();
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                if (simBoard[i][j] == 0) {
-                    emptyTiles.append(qMakePair(i, j));
-                }
-            }
-        }
-
-        if (emptyTiles.isEmpty()) {
-            gameOver = true;
-            continue;
-        }
-
-        std::uniform_int_distribution<> posDis(0, static_cast<int>(emptyTiles.size()) - 1);
-        std::uniform_int_distribution<> valueDis(0, 9);  // 0-8 生成2，9 生成4
-
-        int randomIndex    = posDis(gen);
-        int row            = emptyTiles[randomIndex].first;
-        int col            = emptyTiles[randomIndex].second;
-        simBoard[row][col] = (valueDis(gen) < 9) ? 2 : 4;  // 90%的概率生成2，10%生成4
-    }
-
-    // 最后再次检查最大砖块值
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (simBoard[i][j] > maxTile) {
-                maxTile = simBoard[i][j];
+            if (getTileValue(board, i, j) == 0) {
+                emptyTiles.append(qMakePair(i, j));
             }
         }
     }
+
+    // 如果没有空格，返回原始棋盘
+    if (emptyTiles.isEmpty()) {
+        return board;
+    }
+
+    // 随机选择一个空格
+    int randomIndex = QRandomGenerator::global()->bounded(emptyTiles.size());
+    int row         = emptyTiles[randomIndex].first;
+    int col         = emptyTiles[randomIndex].second;
+
+    // 90%概率生成2，10%概率生成4
+    int value = QRandomGenerator::global()->bounded(10) < 9 ? 2 : 4;
+
+    // 更新棋盘
+    BitBoard newBoard = board;
+    setTileValue(newBoard, row, col, value);
+
+    return newBoard;
 }
 
-// 评估参数性能 - 更全面地评估参数的效果
-int Auto::evaluateParameters(QVector<double> const& params, int simulations) {
-    int totalScore        = 0;
-    int maxTile           = 0;
-    int successCount      = 0;  // 计算达到2048的次数
-    int highTileCount     = 0;  // 计算达到4096的次数
-    int veryHighTileCount = 0;  // 计算达到8192的次数
+// 查找最佳移动方向
+int Auto::findBestMove(QVector<QVector<int>> const& board) {
+    // 将棋盘转换为BitBoard
+    BitBoard bitBoard = convertToBitBoard(board);
 
-    // 保存所有游戏的分数和最大砖块，以计算标准差
-    QVector<int> allScores;
-    QVector<int> allMaxTiles;
+    // 清除缓存
+    QMutexLocker locker(&cacheMutex);
+    expectimaxCache.clear();
+    locker.unlock();
 
-    try {
-        // 运行多次模拟游戏并计算平均分数
-        for (int i = 0; i < simulations; ++i) {
-            int gameScore = 0;
-            int gameTile  = 0;
+    // 先计算每个方向的初始评估值，以便按照有希望的顺序搜索
+    std::vector<std::pair<int, double>> directions;
+    for (int dir = 0; dir < 4; ++dir) {
+        if (canMove(bitBoard, dir)) {
+            BitBoard newBoard = makeMove(bitBoard, dir);
+            // 使用简单的启发式评估
+            double initialScore = emptyTilesHeuristic(newBoard) + monotonicity(newBoard);
+            directions.push_back({dir, initialScore});
+        }
+    }
 
-            // 模拟完整游戏并返回分数和最大砖块
-            simulateFullGameDetailed(params, gameScore, gameTile);
+    // 如果没有有效移动，返回-1
+    if (directions.empty()) {
+        return -1;
+    }
 
-            totalScore += gameScore;
-            maxTile     = std::max(maxTile, gameTile);
+    // 按照评估值降序排序，先搜索有希望的移动
+    std::sort(directions.begin(), directions.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
 
-            allScores.append(gameScore);
-            allMaxTiles.append(gameTile);
+    // 尝试每个方向，找出最佳移动
+    double bestScore = -std::numeric_limits<double>::infinity();
+    int bestMove     = directions[0].first;  // 默认使用最有希望的移动
 
-            // 计算不同级别的成功率
-            if (gameTile >= 2048) {
-                successCount++;
-                if (gameTile >= 4096) {
-                    highTileCount++;
-                    if (gameTile >= 8192) {
-                        veryHighTileCount++;
+    // 获取动态深度，但在这里不直接使用
+    // 而是在expectimax函数中使用
+
+    for (auto const& [dir, _] : directions) {
+        // 执行移动
+        BitBoard newBoard = makeMove(bitBoard, dir);
+
+        // 计算该移动的期望分数，使用alpha-beta剪枝
+        double score = expectimax(
+            newBoard, 0, 1.0, false, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity());
+
+        // 更新最佳移动
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove  = dir;
+        }
+
+        // 输出调试信息
+        qDebug() << "Direction:" << dir << "Score:" << score;
+    }
+
+    qDebug() << "Best move:" << bestMove << "Score:" << bestScore;
+    return bestMove;
+}
+
+// 清除Expectimax缓存
+void Auto::clearExpectimaxCache() {
+    QMutexLocker locker(&cacheMutex);
+    expectimaxCache.clear();
+}
+
+// 获取数据文件路径
+QString Auto::getDataPath() const {
+    // 创建数据目录（如果不存在）
+    QDir dir;
+    QString dataPath = QDir::currentPath() + "/data";
+    if (!dir.exists(dataPath)) {
+        dir.mkpath(dataPath);
+    }
+    return dataPath + "/ai_parameters.txt";
+}
+
+// 保存参数
+bool Auto::saveParameters() {
+    QFile file(getDataPath());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qDebug() << "无法打开文件保存参数:" << file.errorString();
+        return false;
+    }
+
+    QTextStream out(&file);
+    for (double weight : weights) {
+        out << weight << "\n";
+    }
+
+    file.close();
+    return true;
+}
+
+// 加载参数
+bool Auto::loadParameters() {
+    QFile file(getDataPath());
+    if (!file.exists() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qDebug() << "无法打开文件加载参数:" << file.errorString();
+        return false;
+    }
+
+    QTextStream in(&file);
+    QVector<double> loadedWeights;
+
+    while (!in.atEnd()) {
+        QString line  = in.readLine();
+        bool ok       = false;
+        double weight = line.toDouble(&ok);
+        if (ok) {
+            loadedWeights.append(weight);
+        }
+    }
+
+    file.close();
+
+    // 确保加载的权重数量正确
+    if (loadedWeights.size() == weights.size()) {
+        weights = loadedWeights;
+        return true;
+    }
+
+    return false;
+}
+
+// 停止训练
+void Auto::stopTraining() {
+    stopTrainingFlag = true;
+}
+
+// 重置参数
+void Auto::resetParameters() {
+    // 重置为默认权重
+    weights = {
+        10.0,  // 空格数量权重
+        2.0,   // 单调性权重
+        1.0,   // 平滑度权重
+        2.0,   // 角落策略权重
+        1.0    // 合并可能性权重
+    };
+}
+
+// 重置历史最佳分数
+void Auto::resetBestHistoricalScore() {
+    // 重置参数
+    resetParameters();
+
+    // 清除缓存
+    clearExpectimaxCache();
+
+    // 删除保存的参数文件
+    QFile file(getDataPath());
+    if (file.exists()) {
+        file.remove();
+    }
+
+    qDebug() << "历史最佳分数和参数已重置";
+}
+
+// 获取训练进度对象
+TrainingProgress* Auto::getTrainingProgress() {
+    return trainingProgress;
+}
+
+// 获取搜索深度
+int Auto::getSearchDepth(BitBoard board) const {
+    // 根据空格数量动态调整搜索深度
+    int emptyCount = getEmptyTileCount(board);
+
+    // 空格越少，搜索深度越大
+    if (emptyCount <= 2) {
+        return 6;  // 极少空格时搜索更深
+    }
+    if (emptyCount <= 4) {
+        return 5;
+    }
+    if (emptyCount <= 6) {
+        return 4;
+    }
+    if (emptyCount <= 8) {
+        return 3;
+    }
+    return 2;  // 空格多时搜索浅一些
+}
+
+// Expectimax算法实现
+double Auto::expectimax(
+    BitBoard board, int depth, double probability, bool isMaximizingPlayer, double alpha, double beta) {
+    // 如果概率太小或者达到最大深度，返回评估值
+    int maxDepth = getSearchDepth(board);
+    if (probability < 0.0001 || depth >= maxDepth) {
+        return evaluateBoard(board);
+    }
+
+    // 检查缓存
+    QMutexLocker locker(&cacheMutex);
+    auto it = expectimaxCache.find(board);
+    if (it != expectimaxCache.end()) {
+        return it->second;
+    }
+    locker.unlock();
+
+    // 如果游戏结束，返回评估值
+    if (isGameOver(board)) {
+        return evaluateBoard(board);
+    }
+
+    double value = 0.0;
+
+    if (isMaximizingPlayer) {
+        // 玩家回合，尝试所有可能的移动
+        value                = -std::numeric_limits<double>::infinity();
+        bool validMoveExists = false;
+
+        // 先计算每个方向的初始评估值，以便按照有希望的顺序搜索
+        std::vector<std::pair<int, double>> directions;
+        for (int dir = 0; dir < 4; ++dir) {
+            if (canMove(board, dir)) {
+                BitBoard newBoard = makeMove(board, dir);
+                // 使用简单的启发式评估
+                double initialScore = emptyTilesHeuristic(newBoard) + monotonicity(newBoard);
+                directions.push_back({dir, initialScore});
+            }
+        }
+
+        // 按照评估值降序排序，先搜索有希望的移动
+        std::sort(
+            directions.begin(), directions.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+
+        for (auto const& [dir, _] : directions) {
+            validMoveExists   = true;
+            BitBoard newBoard = makeMove(board, dir);
+            double moveValue  = expectimax(newBoard, depth + 1, probability, false, alpha, beta);
+            value             = std::max(value, moveValue);
+
+            // Alpha-Beta剪枝
+            alpha = std::max(alpha, value);
+            if (alpha >= beta) {
+                break;  // Beta剪枝
+            }
+        }
+
+        // 如果没有有效移动，返回评估值
+        if (!validMoveExists) {
+            value = evaluateBoard(board);
+        }
+    } else {
+        // 电脑回合，随机生成新方块
+        value          = 0.0;
+        int emptyCount = getEmptyTileCount(board);
+
+        if (emptyCount == 0) {
+            return evaluateBoard(board);
+        }
+
+        // 计算每个空格生成2或4的期望值
+
+        // 优化：如果空格太多，只随机选择一部分进行计算
+        std::vector<std::pair<int, int>> emptyPositions;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                if (getTileValue(board, i, j) == 0) {
+                    emptyPositions.push_back({i, j});
+                }
+            }
+        }
+
+        // 如果空格超过4个，随机选择4个进行计算
+        if (emptyPositions.size() > 4 && depth > 0) {
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::shuffle(emptyPositions.begin(), emptyPositions.end(), gen);
+            emptyPositions.resize(4);
+        }
+
+        for (auto const& [i, j] : emptyPositions) {
+            // 尝试在此位置放置2
+            BitBoard newBoard = board;
+            setTileValue(newBoard, i, j, 2);
+            double newProb = probability * PROBABILITY_2 / emptyCount;
+            double val2    = expectimax(newBoard, depth, newProb, true, alpha, beta);
+
+            // 尝试在此位置放置4
+            newBoard = board;
+            setTileValue(newBoard, i, j, 4);
+            newProb     = probability * PROBABILITY_4 / emptyCount;
+            double val4 = expectimax(newBoard, depth, newProb, true, alpha, beta);
+
+            // 加权平均
+            double positionValue  = (PROBABILITY_2 * val2 + PROBABILITY_4 * val4);
+            value                += positionValue / emptyPositions.size();
+
+            // 对于最小化玩家，我们希望找到最小的值
+            // 但在这里我们实际上是在计算期望值，所以不进行剪枝
+        }
+    }
+
+    // 更新缓存
+    locker.relock();
+    expectimaxCache[board] = value;
+
+    return value;
+}
+
+// 评估棋盘状态
+double Auto::evaluateBoard(BitBoard board) const {
+    // 如果启用了GPU加速，使用GPU版本
+    if (useGPU && openclManager != nullptr) {
+        return evaluateBoardGPU(board);
+    }
+
+    // 组合多种启发式方法
+    double score = 0.0;
+
+    // 空格数量评估
+    score += weights[0] * emptyTilesHeuristic(board);
+
+    // 单调性评估
+    score += weights[1] * monotonicity(board);
+
+    // 平滑度评估
+    score += weights[2] * smoothness(board);
+
+    // 角落策略评估
+    score += weights[3] * cornerHeuristic(board);
+
+    // 合并可能性评估
+    score += weights[4] * mergeHeuristic(board);
+
+    // 超过2048后，考虑草形模式
+    int maxTile = getMaxTile(board);
+    if (maxTile >= 2048) {
+        // 添加草形模式评估，权重随最大方块值增加
+        double patternWeight  = std::log2(maxTile) / 11.0;  // 2048的log2是11
+        score                += patternWeight * patternHeuristic(board);
+    }
+
+    return score;
+}
+
+// 空格数量启发式
+double Auto::emptyTilesHeuristic(BitBoard board) const {
+    int emptyCount = getEmptyTileCount(board);
+    return emptyCount;
+}
+
+// 单调性启发式（确保数值沿某方向单调增加/减少）
+double Auto::monotonicity(BitBoard board) const {
+    // 计算四个方向的单调性
+    double monotonicityScore = 0.0;
+
+    // 水平方向单调性
+    for (int i = 0; i < 4; ++i) {
+        // 从左到右单调递增
+        int leftToRight = 0;
+        // 从右到左单调递增
+        int rightToLeft = 0;
+
+        for (int j = 0; j < 3; ++j) {
+            int current = getTileValue(board, i, j);
+            int next    = getTileValue(board, i, j + 1);
+
+            if (current != 0 && next != 0) {
+                if (current > next) {
+                    leftToRight += std::log2(current / next);
+                } else if (next > current) {
+                    rightToLeft += std::log2(next / current);
+                }
+            }
+        }
+
+        // 取较小的惩罚值
+        monotonicityScore -= std::min(leftToRight, rightToLeft);
+    }
+
+    // 垂直方向单调性
+    for (int j = 0; j < 4; ++j) {
+        // 从上到下单调递增
+        int topToBottom = 0;
+        // 从下到上单调递增
+        int bottomToTop = 0;
+
+        for (int i = 0; i < 3; ++i) {
+            int current = getTileValue(board, i, j);
+            int next    = getTileValue(board, i + 1, j);
+
+            if (current != 0 && next != 0) {
+                if (current > next) {
+                    topToBottom += std::log2(current / next);
+                } else if (next > current) {
+                    bottomToTop += std::log2(next / current);
+                }
+            }
+        }
+
+        // 取较小的惩罚值
+        monotonicityScore -= std::min(topToBottom, bottomToTop);
+    }
+
+    return monotonicityScore;
+}
+
+// 平滑度启发式（相邻方块数值差异越小越好）
+double Auto::smoothness(BitBoard board) const {
+    double smoothnessScore = 0.0;
+
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            int value = getTileValue(board, i, j);
+
+            if (value != 0) {
+                // 检查右侧方块
+                if (j < 3) {
+                    int rightValue = getTileValue(board, i, j + 1);
+                    if (rightValue != 0) {
+                        smoothnessScore -= std::abs(std::log2(value) - std::log2(rightValue));
+                    }
+                }
+
+                // 检查下方方块
+                if (i < 3) {
+                    int belowValue = getTileValue(board, i + 1, j);
+                    if (belowValue != 0) {
+                        smoothnessScore -= std::abs(std::log2(value) - std::log2(belowValue));
                     }
                 }
             }
         }
-
-        // 计算平均分数和标准差
-        int avgScore = totalScore / simulations;
-
-        // 计算分数的标准差
-        double scoreVariance = 0;
-        for (int score : allScores) {
-            scoreVariance += (score - avgScore) * (score - avgScore);
-        }
-        double scoreStdDev = std::sqrt(scoreVariance / simulations);
-
-        // 计算成功率
-        int successRate      = (successCount * 100) / simulations;
-        int highTileRate     = (highTileCount * 100) / simulations;
-        int veryHighTileRate = (veryHighTileCount * 100) / simulations;
-
-        // 输出详细的评估结果
-        qDebug() << "\nEvaluation results:";
-        qDebug() << "Average score:" << avgScore << "points (std dev:" << scoreStdDev << ")";
-        qDebug() << "Success rates: 2048:" << successRate << "%, 4096:" << highTileRate
-                 << "%, 8192:" << veryHighTileRate << "%";
-        qDebug() << "Max tile achieved:" << maxTile;
-
-        // 改进的加权分数公式
-        // 1. 平均分数权重
-        double scoreWeight = 1.0;
-
-        // 2. 成功率奖励 - 非线性增长
-        double successBonus = successRate * 100 + highTileRate * 500 + veryHighTileRate * 2000;
-
-        // 3. 最大砖块奖励 - 指数增长
-        double maxTileBonus = 0;
-        if (maxTile >= 2048) {
-            // 对于高级砖块，给予指数级奖励
-            int logTile  = static_cast<int>(log2(maxTile));
-            maxTileBonus = std::pow(2, logTile - 10) * 2000;  // 2048 = 2^11, 所以 11-10=1
-        }
-
-        // 4. 稳定性奖励 - 如果标准差小，说明策略更稳定
-        double stabilityBonus = 0;
-        if (scoreStdDev < avgScore * 0.3) {  // 如果标准差小于平均值的30%
-            stabilityBonus = 5000;
-        } else if (scoreStdDev < avgScore * 0.5) {  // 如果标准差小于平均值的50%
-            stabilityBonus = 2000;
-        }
-
-        // 计算最终分数
-        int finalScore = static_cast<int>(avgScore * scoreWeight + successBonus + maxTileBonus + stabilityBonus);
-
-        qDebug() << "Final weighted score:" << finalScore;
-        qDebug() << "  - Base score:" << static_cast<int>(avgScore * scoreWeight);
-        qDebug() << "  - Success bonus:" << static_cast<int>(successBonus);
-        qDebug() << "  - Max tile bonus:" << static_cast<int>(maxTileBonus);
-        qDebug() << "  - Stability bonus:" << static_cast<int>(stabilityBonus);
-
-        return finalScore;
-    } catch (std::exception const& e) {
-        qDebug() << "Exception in evaluateParameters:" << e.what();
-        return 0;  // 发生异常时返回0分
-    } catch (...) {
-        qDebug() << "Unknown exception in evaluateParameters";
-        return 0;  // 发生未知异常时返回0分
     }
+
+    return smoothnessScore;
 }
 
-// 保存参数到文件
-bool Auto::saveParameters(QString const& filename) {
-    // 确保数据目录存在
-    QString dataDirPath = getDataDirPath();
-    QDir dataDir;
+// 角落策略启发式（大数值放在角落）
+double Auto::cornerHeuristic(BitBoard board) const {
+    double cornerScore = 0.0;
 
-    if (!dataDir.exists(dataDirPath)) {
-        bool pathCreated = dataDir.mkpath(dataDirPath);
-        qDebug() << "Creating data directory at" << dataDirPath << (pathCreated ? "success" : "failed");
+    // 检查四个角落
+    int topLeft     = getTileValue(board, 0, 0);
+    int topRight    = getTileValue(board, 0, 3);
+    int bottomLeft  = getTileValue(board, 3, 0);
+    int bottomRight = getTileValue(board, 3, 3);
 
-        if (!pathCreated) {
-            qDebug() << "Failed to create data directory for parameters";
-            return false;
+    // 找出最大值
+    int maxCorner = std::max(std::max(topLeft, topRight), std::max(bottomLeft, bottomRight));
+
+    // 如果最大值在角落，给予奖励
+    if (maxCorner > 0) {
+        cornerScore += std::log2(maxCorner);
+    }
+
+    return cornerScore;
+}
+
+// 合并可能性启发式（相邻相同数值的方块数量）
+double Auto::mergeHeuristic(BitBoard board) const {
+    double mergeScore = 0.0;
+
+    // 检查水平方向可合并的方块
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if (getTileValue(board, i, j) != 0 && getTileValue(board, i, j) == getTileValue(board, i, j + 1)) {
+                mergeScore += std::log2(getTileValue(board, i, j));
+            }
         }
     }
 
-    // 准备文件名
-    QString saveFilename;
-    if (filename.isEmpty()) {
-        // 生成默认文件名，包含时间戳
-        QDateTime now = QDateTime::currentDateTime();
-        saveFilename  = dataDirPath + "/2048_ai_params_" + now.toString("yyyyMMdd_hhmmss") + ".json";
-    } else if (filename.startsWith("/")) {
-        // 如果是绝对路径，直接使用
-        saveFilename = filename;
-    } else {
-        // 其他情况，添加到数据目录
-        saveFilename = dataDirPath + "/" + filename;
-    }
-
-    qDebug() << "Preparing to save parameters to:" << saveFilename;
-
-    // 创建 JSON 对象
-    QJsonObject paramsObj;
-    QJsonArray paramsArray;
-
-    for (double param : strategyParams) {
-        paramsArray.append(param);
-    }
-
-    paramsObj["parameters"] = paramsArray;
-    paramsObj["score"]      = bestHistoricalScore;  // 存储该参数集的最高分
-    paramsObj["timestamp"]  = QDateTime::currentDateTime().toString(Qt::ISODate);
-
-    QJsonDocument doc(paramsObj);
-
-    // 先尝试保存持久化数据，确保它被保存
-    bool persistentSaved = savePersistentData(doc);
-    if (!persistentSaved) {
-        qDebug() << "Warning: Failed to save persistent data";
-    }
-
-    // 然后保存参数文件
-    QFile file(saveFilename);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open file for writing:" << saveFilename << ": " << file.errorString();
-
-        // 尝试使用绝对路径
-        QString absPath = QDir::currentPath() + "/" + saveFilename;
-        QFile absFile(absPath);
-        qDebug() << "Trying absolute path:" << absPath;
-
-        if (absFile.open(QIODevice::WriteOnly)) {
-            absFile.write(doc.toJson());
-            absFile.close();
-            qDebug() << "Parameters saved to absolute path:" << absPath;
-            return true;
-        } else {
-            qDebug() << "Still failed to save parameters using absolute path:" << absFile.errorString();
-            // 即使参数文件保存失败，只要持久化数据保存成功，也返回true
-            return persistentSaved;
+    // 检查垂直方向可合并的方块
+    for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 3; ++i) {
+            if (getTileValue(board, i, j) != 0 && getTileValue(board, i, j) == getTileValue(board, i + 1, j)) {
+                mergeScore += std::log2(getTileValue(board, i, j));
+            }
         }
     }
 
-    file.write(doc.toJson());
-    file.close();
-    qDebug() << "Parameters saved to:" << saveFilename;
-    return true;
+    return mergeScore;
 }
 
-// 保存持久化数据
-bool Auto::savePersistentData(QJsonDocument const& doc) {
-    // 确保数据目录存在
-    QString dataDirPath = getDataDirPath();
-    QDir dataDir;
+// 模式启发式（奖励特定的棋盘模式）
+double Auto::patternHeuristic(BitBoard board) const {
+    // 这里实现一个简单的蛇形模式评估
+    // 蛇形模式：大数值按照蛇形路径排列
+    double patternScore = 0.0;
 
-    if (!dataDir.exists(dataDirPath)) {
-        bool pathCreated = dataDir.mkpath(dataDirPath);
-        qDebug() << "Creating data directory at" << dataDirPath << (pathCreated ? "success" : "failed");
+    // 定义蛇形路径的权重
+    double const weights[4][4] = {{15, 14, 13, 12}, {8, 9, 10, 11}, {7, 6, 5, 4}, {0, 1, 2, 3}};
 
-        if (!pathCreated) {
-            qDebug() << "Failed to create data directory for persistent data";
-            return false;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            int value = getTileValue(board, i, j);
+            if (value > 0) {
+                patternScore += weights[i][j] * std::log2(value);
+            }
         }
     }
 
-    // 保存数据
-    QString persistentFilePath = dataDirPath + "/2048_ai_persistent_data.json";
-    QFile persistentDataFile(persistentFilePath);
-
-    qDebug() << "Attempting to save persistent data to:" << persistentFilePath;
-
-    if (!persistentDataFile.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to save persistent data to:" << persistentFilePath << ": "
-                 << persistentDataFile.errorString();
-        return false;
-    }
-
-    persistentDataFile.write(doc.toJson());
-    persistentDataFile.close();
-    qDebug() << "Successfully saved persistent training data to:" << persistentFilePath;
-    return true;
+    return patternScore;
 }
 
-// 从文件加载参数
-bool Auto::loadParameters(QString const& filename) {
-    QString loadFilename = filename;
-    if (loadFilename.isEmpty()) {
-        // 如果没有指定文件名，尝试加载默认文件
-        loadFilename = "data/2048_ai_params_default.json";
-    } else if (!loadFilename.startsWith("data/") && !loadFilename.startsWith("/")) {
-        // 如果没有指定路径，先尝试从数据目录加载
-        QString dataFilename = "data/" + loadFilename;
-        QFile dataFile(dataFilename);
-        if (dataFile.exists()) {
-            loadFilename = dataFilename;
-        }
-    }
+// 学习参数
+void Auto::learnParameters(int populationSize, int generations, int simulationsPerEval) {
+    // 重置停止标志
+    stopTrainingFlag = false;
 
-    QFile file(loadFilename);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open file for reading:" << loadFilename;
-        return false;
-    }
+    // 重置早期停止计数器
+    patienceCounter = 0;
 
-    QByteArray data = file.readAll();
-    file.close();
+    // 初始化学习率
+    learningRate = 0.1;
 
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (doc.isNull() || !doc.isObject()) {
-        return false;
-    }
-
-    QJsonObject obj = doc.object();
-    if (!obj.contains("parameters") || !obj["parameters"].isArray()) {
-        return false;
-    }
-
-    QJsonArray paramsArray = obj["parameters"].toArray();
-    QVector<double> loadedParams;
-
-    for (auto const& value : paramsArray) {
-        if (value.isDouble()) {
-            loadedParams.append(value.toDouble());
-        }
-    }
-
-    // 确保参数数量正确
-    if (loadedParams.size() < 5) {
-        return false;
-    }
-
-    // 加载历史最佳分数
-    if (obj.contains("score")) {
-        bestHistoricalScore = obj["score"].toInt();
-    } else {
-        bestHistoricalScore = 0;
-    }
-
-    // 更新参数
-    strategyParams   = loadedParams;
-    useLearnedParams = true;
-
-    return true;
-}
-
-// learnParameters: 学习最佳参数
-void Auto::learnParameters(int populationSize, int generations, int simulations) {
-    // 如果已经在训练中，则返回
-    if (trainingActive.load()) {
-        return;
-    }
-
-    // 清除缓存，确保内存干净
-    clearExpectimaxCache();
-    bitboardCache.clear();
-
-    // 设置训练状态
-    trainingActive.store(true);
-
-    // 创建训练线程，避免阻塞主线程
-    QThread* trainingThread = new QThread();
-    TrainingWorker* worker  = new TrainingWorker(this, populationSize, generations, simulations);
-    worker->moveToThread(trainingThread);
-
-    // 连接信号和槽
-    connect(trainingThread, &QThread::started, worker, &TrainingWorker::doTraining);
-    connect(worker, &TrainingWorker::finished, trainingThread, &QThread::quit);
-    connect(worker, &TrainingWorker::finished, worker, &QObject::deleteLater);
-    connect(trainingThread, &QThread::finished, trainingThread, &QObject::deleteLater);
-
-    // 添加错误处理
-    connect(trainingThread, &QThread::finished, [this]() {
-        // 确保训练状态被重置，即使发生错误
-        trainingActive.store(false);
-        qDebug() << "Training thread finished and cleaned up";
-    });
-
-    // 启动训练线程
-    trainingThread->start();
-}
-
-// findTopIndices: 找出最高分数的索引
-QVector<int> Auto::findTopIndices(QVector<int> const& scores, int count) {
-    QVector<int> indices(scores.size());
-    for (int i = 0; i < scores.size(); ++i) {
-        indices[i] = i;
-    }
-
-    // 根据分数排序索引
-    std::sort(indices.begin(), indices.end(), [&scores](int a, int b) { return scores[a] > scores[b]; });
-
-    // 返回前 count 个索引
-    return indices.mid(0, count);
-}
-
-// tournamentSelection: 选择算法
-int Auto::tournamentSelection(QVector<int> const& scores) {
-    // 使用现代C++随机数生成器
+    // 初始化随机数生成器
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, static_cast<int>(scores.size()) - 1);
 
-    // 随机选择3个个体进行比赛
-    int a = dis(gen);
-    int b = dis(gen);
-    int c = dis(gen);
+    // 初始化种群
+    std::vector<QVector<double>> population;
+    std::vector<double> fitness;
 
-    // 返回分数最高的
-    if (scores[a] >= scores[b] && scores[a] >= scores[c]) {
-        return a;
+    // 生成初始种群
+    for (int i = 0; i < populationSize; ++i) {
+        // 基于当前权重生成变异
+        QVector<double> individual = weights;
+
+        // 添加随机变异
+        individual = mutate(individual, 0.5);
+
+        population.push_back(individual);
+        fitness.push_back(0.0);
     }
-    if (scores[b] >= scores[a] && scores[b] >= scores[c]) {
-        return b;
+
+    // 确保当前权重也在种群中
+    population[0] = weights;
+
+    // 记录最佳个体
+    QVector<double> bestIndividual = weights;
+    double bestFitness             = 0.0;
+
+    // 进化多代
+    for (int gen = 0; gen < generations; ++gen) {
+        // 检查是否要停止训练
+        if (stopTrainingFlag) {
+            qDebug() << "训练被用户中断";
+            break;
+        }
+
+// 评估每个个体
+#pragma omp parallel for
+        for (int i = 0; i < populationSize; ++i) {
+            // 如果这个个体已经评估过，跳过
+            if (fitness[i] > 0) {
+                continue;
+            }
+
+            // 运行多次模拟并取平均分数
+            double totalScore = 0.0;
+
+            // 如果启用了GPU加速，使用GPU版本
+            if (useGPU && openclManager != nullptr) {
+                // 临时设置权重
+                QVector<double> oldWeights = weights;
+                weights                    = population[i];
+
+                // 使用GPU运行批量模拟
+                QVector<double> scores = runSimulationsGPU(weights, simulationsPerEval);
+
+                // 计算总分
+                for (double score : scores) {
+                    totalScore += score;
+                }
+
+                // 恢复原来的权重
+                weights = oldWeights;
+            } else {
+                // 使用CPU运行模拟
+                for (int sim = 0; sim < simulationsPerEval; ++sim) {
+                    // 临时设置权重
+                    QVector<double> oldWeights = weights;
+                    weights                    = population[i];
+
+                    // 运行模拟
+                    double score  = runSimulation(weights);
+                    totalScore   += score;
+
+                    // 恢复原来的权重
+                    weights = oldWeights;
+                }
+            }
+
+            // 计算平均分数
+            fitness[i] = totalScore / simulationsPerEval;
+        }
+
+        // 找出最佳个体
+        int bestIndex = 0;
+        for (int i = 0; i < populationSize; ++i) {
+            if (fitness[i] > fitness[bestIndex]) {
+                bestIndex = i;
+            }
+        }
+
+        // 获取当前代的最佳适应度
+        // 直接使用fitness[bestIndex]进行比较
+
+        // 更新全局最佳个体
+        if (fitness[bestIndex] > bestFitness) {
+            bestFitness    = fitness[bestIndex];
+            bestIndividual = population[bestIndex];
+
+            // 发送进度信号
+            trainingProgress->progressUpdated(gen + 1, generations, static_cast<int>(bestFitness), bestIndividual);
+
+            qDebug() << "第" << gen + 1 << "代最佳分数:" << bestFitness;
+            qDebug() << "最佳参数:" << bestIndividual;
+
+            // 重置早期停止计数器
+            patienceCounter = 0;
+
+            // 如果超过历史最佳分数，更新并保存
+            if (bestFitness > bestHistoricalScore) {
+                bestHistoricalScore = bestFitness;
+                saveParameters();
+            }
+        } else {
+            // 如果没有改进，增加计数器
+            patienceCounter++;
+
+            // 调整学习率
+            if (patienceCounter > 3) {
+                learningRate *= 0.8;  // 减小学习率
+                qDebug() << "调整学习率为:" << learningRate;
+            }
+
+            // 早期停止检查
+            if (patienceCounter > 10) {
+                qDebug() << "连续10代没有改进，提前停止训练";
+                break;
+            }
+        }
+
+        // 创建新一代
+        std::vector<QVector<double>> newPopulation;
+        std::vector<double> newFitness;
+
+        // 精英主义：保留最佳个体
+        newPopulation.push_back(bestIndividual);
+        newFitness.push_back(bestFitness);
+
+        // 生成新一代
+        while (newPopulation.size() < populationSize) {
+            // 选择父代（锁定赛选择）
+            int parent1Index = tournamentSelect(population, fitness, 3);
+            int parent2Index = tournamentSelect(population, fitness, 3);
+
+            // 交叉
+            QVector<double> child = crossover(population[parent1Index], population[parent2Index]);
+
+            // 变异，使用自适应学习率
+            child = mutate(child, 0.1 * learningRate);
+
+            // 添加到新种群
+            newPopulation.push_back(child);
+            newFitness.push_back(0.0);
+        }
+
+        // 替换种群
+        population = newPopulation;
+        fitness    = newFitness;
     }
-    return c;
+
+    // 训练结束，更新权重
+    weights = bestIndividual;
+
+    // 发送训练完成信号
+    trainingProgress->trainingCompleted(static_cast<int>(bestFitness), bestIndividual);
+
+    // 保存参数
+    saveParameters();
+
+    qDebug() << "训练完成，最终分数:" << bestFitness;
 }
 
-// crossover: 交叉算法
+// 锁定赛选择
+int Auto::tournamentSelect(std::vector<QVector<double>> const& population,
+                           std::vector<double> const& fitness,
+                           int tournamentSize) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, population.size() - 1);
+
+    int bestIndex      = dist(gen);
+    double bestFitness = fitness[bestIndex];
+
+    for (int i = 1; i < tournamentSize; ++i) {
+        int index = dist(gen);
+        if (fitness[index] > bestFitness) {
+            bestIndex   = index;
+            bestFitness = fitness[index];
+        }
+    }
+
+    return bestIndex;
+}
+
+// 运行模拟
+double Auto::runSimulation(QVector<double> const& params) {
+    // 如果启用了GPU加速，使用GPU版本
+    if (useGPU && openclManager != nullptr) {
+        // 运行单个模拟，取平均值
+        QVector<double> scores = runSimulationsGPU(params, 1);
+        if (!scores.isEmpty()) {
+            return scores[0];
+        }
+    }
+
+    // 保存原始权重
+    QVector<double> oldWeights = weights;
+
+    // 设置新权重
+    weights = params;
+
+    // 初始化棋盘
+    BitBoard board = 0;
+
+    // 添加两个初始方块
+    board = addRandomTile(board);
+    board = addRandomTile(board);
+
+    // 记录分数
+    int score   = 0;
+    int moves   = 0;
+    int maxTile = 0;
+
+    // 运行游戏直到结束
+    while (!isGameOver(board) && moves < 1000) {
+        // 找出最佳移动
+        int bestMove     = -1;
+        double bestScore = -std::numeric_limits<double>::infinity();
+
+        for (int dir = 0; dir < 4; ++dir) {
+            if (canMove(board, dir)) {
+                BitBoard newBoard = makeMove(board, dir);
+                double moveScore  = expectimax(newBoard, 0, 1.0, false);
+
+                if (moveScore > bestScore) {
+                    bestScore = moveScore;
+                    bestMove  = dir;
+                }
+            }
+        }
+
+        // 如果没有有效移动，结束游戏
+        if (bestMove == -1) {
+            break;
+        }
+
+        // 执行移动
+        board = makeMove(board, bestMove);
+
+        // 添加新方块
+        board = addRandomTile(board);
+
+        // 更新分数和移动次数
+        score = getScore(board);
+        moves++;
+
+        // 更新最大方块
+        maxTile = std::max(maxTile, getMaxTile(board));
+    }
+
+    // 恢复原始权重
+    weights = oldWeights;
+
+    // 返回分数，考虑最大方块和移动次数
+    return score + (std::log2(maxTile) * 1000) + (moves * 10);
+}
+
+// 交叉操作
 QVector<double> Auto::crossover(QVector<double> const& parent1, QVector<double> const& parent2) {
     QVector<double> child(parent1.size());
 
-    // 使用现代C++随机数生成器
+    // 单点交叉
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 1);
+    std::uniform_int_distribution<> dist(0, parent1.size() - 1);
 
-    // 均匀交叉
+    int crossoverPoint = dist(gen);
+
     for (int i = 0; i < parent1.size(); ++i) {
-        // 50%的概率从父代1继承，50%的概率从父代2继承
-        child[i] = (dis(gen) == 0) ? parent1[i] : parent2[i];
+        if (i < crossoverPoint) {
+            child[i] = parent1[i];
+        } else {
+            child[i] = parent2[i];
+        }
     }
 
     return child;
 }
 
-// mutate: 变异算法
-void Auto::mutate(QVector<double>& params, double mutationRate) {
-    // 使用现代C++随机数生成器
+// 变异操作
+QVector<double> Auto::mutate(QVector<double> const& individual, double mutationRate) {
+    QVector<double> mutated = individual;
+
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_real_distribution<> dis(0.0, 1.0);
-    std::uniform_real_distribution<> change_dis(-0.5, 0.5);  // 增大变异幅度到 -50% 到 +50%
+    std::uniform_real_distribution<> dist(0.0, 1.0);
+    std::normal_distribution<> normal(0.0, 1.0);
 
-    // 每个参数有 mutationRate 的概率发生变异
-    for (int i = 0; i < params.size(); ++i) {
-        if (dis(gen) < mutationRate) {
-            // 变异幅度为当前值的 -50% 到 +50%
-            double change  = params[i] * change_dis(gen);
-            params[i]     += change;
+    for (int i = 0; i < mutated.size(); ++i) {
+        // 按照变异率决定是否变异
+        if (dist(gen) < mutationRate) {
+            // 添加正态分布的随机值
+            mutated[i] += normal(gen) * mutated[i] * 0.2;
 
-            // 确保参数不为负且有上限
-            params[i] = std::max(0.0, std::min(params[i], 20.0));
+            // 确保权重为正值
+            if (mutated[i] < 0.01) {
+                mutated[i] = 0.01;
+            }
         }
     }
+
+    return mutated;
 }
+
+// 移除重复的isGPUEnabled实现，该函数已在auto_gpu.cpp中定义

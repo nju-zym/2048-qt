@@ -27,7 +27,7 @@
 #include <cmath>
 
 namespace {
-// 新增静态变量，用于记录是否已弹出胜利提示
+// 全局变量，用于记录是否已弹出胜利提示
 bool winAlertShown = false;
 }  // namespace
 
@@ -35,7 +35,6 @@ bool winAlertShown = false;
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
-      board(4, QVector<int>(4, 0)),
       score(0),
       bestScore(0),
       animationInProgress(false),
@@ -84,9 +83,7 @@ void MainWindow::initializeTiles() {
     // 首先清除任何现有的标签
     for (auto& row : tileLabels) {
         for (auto& label : row) {
-            if (label) {
-                delete label;
-            }
+            delete label;  // 删除空指针是安全的，不需要检查
         }
     }
 
@@ -97,15 +94,21 @@ void MainWindow::initializeTiles() {
     }
 
     // 清空棋盘所使用的布局中的所有项，防止重复添加控件
-    QLayoutItem* item;
+    QLayoutItem* item = nullptr;
     while ((item = ui->boardLayout->takeAt(0)) != nullptr) {
         delete item;  // 删除布局中的旧项
     }
 
+    // 设置布局的水平和垂直间距相等，以保持格子间距一致
+    ui->boardLayout->setHorizontalSpacing(6);
+    ui->boardLayout->setVerticalSpacing(6);
+    ui->boardLayout->setContentsMargins(6, 6, 6, 6);  // 设置左右上下边距相等
+    ui->boardLayout->setSpacing(6);                   // 设置较小的间距值，使格子排列更紧凑
+
     // 为每个棋盘位置创建新的QLabel，设置初始样式和大小，并添加到布局中
     for (int row = 0; row < 4; ++row) {
         for (int col = 0; col < 4; ++col) {
-            QLabel* label = new QLabel(ui->gameBoard);
+            auto* label = new QLabel(ui->gameBoard);
             label->setAlignment(Qt::AlignCenter);        // 标签内容居中显示
             label->setFixedSize(80, 80);                 // 固定标签大小为80x80像素
             label->setStyleSheet(getTileStyleSheet(0));  // 使用初始值0的样式
@@ -430,7 +433,8 @@ bool MainWindow::moveTiles(int direction) {
                             for (int row = i + 1; row < 4 && !isMerged; ++row) {
                                 if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
                                     // 找到了合并源
-                                    TileMove move = {row, j, i, j, true};
+                                    TileMove move
+                                        = {.fromRow = row, .fromCol = j, .toRow = i, .toCol = j, .merged = true};
                                     tileMoves.append(move);
                                     processed[row][j] = true;
                                     isMerged          = true;
@@ -442,7 +446,8 @@ bool MainWindow::moveTiles(int direction) {
                                 for (int row = i + 1; row < 4; ++row) {
                                     if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
                                         // 找到了移动源
-                                        TileMove move = {row, j, i, j, false};
+                                        TileMove move
+                                            = {.fromRow = row, .fromCol = j, .toRow = i, .toCol = j, .merged = false};
                                         tileMoves.append(move);
                                         processed[row][j] = true;
                                         break;
@@ -453,7 +458,8 @@ bool MainWindow::moveTiles(int direction) {
                             for (int col = j - 1; col >= 0 && !isMerged; --col) {
                                 if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
                                     // 找到了合并源
-                                    TileMove move = {i, col, i, j, true};
+                                    TileMove move
+                                        = {.fromRow = i, .fromCol = col, .toRow = i, .toCol = j, .merged = true};
                                     tileMoves.append(move);
                                     processed[i][col] = true;
                                     isMerged          = true;
@@ -465,7 +471,8 @@ bool MainWindow::moveTiles(int direction) {
                                 for (int col = j - 1; col >= 0; --col) {
                                     if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
                                         // 找到了移动源
-                                        TileMove move = {i, col, i, j, false};
+                                        TileMove move
+                                            = {.fromRow = i, .fromCol = col, .toRow = i, .toCol = j, .merged = false};
                                         tileMoves.append(move);
                                         processed[i][col] = true;
                                         break;
@@ -476,7 +483,8 @@ bool MainWindow::moveTiles(int direction) {
                             for (int row = i - 1; row >= 0 && !isMerged; --row) {
                                 if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
                                     // 找到了合并源
-                                    TileMove move = {row, j, i, j, true};
+                                    TileMove move
+                                        = {.fromRow = row, .fromCol = j, .toRow = i, .toCol = j, .merged = true};
                                     tileMoves.append(move);
                                     processed[row][j] = true;
                                     isMerged          = true;
@@ -488,7 +496,8 @@ bool MainWindow::moveTiles(int direction) {
                                 for (int row = i - 1; row >= 0; --row) {
                                     if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
                                         // 找到了移动源
-                                        TileMove move = {row, j, i, j, false};
+                                        TileMove move
+                                            = {.fromRow = row, .fromCol = j, .toRow = i, .toCol = j, .merged = false};
                                         tileMoves.append(move);
                                         processed[row][j] = true;
                                         break;
@@ -499,7 +508,8 @@ bool MainWindow::moveTiles(int direction) {
                             for (int col = j + 1; col < 4 && !isMerged; ++col) {
                                 if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
                                     // 找到了合并源
-                                    TileMove move = {i, col, i, j, true};
+                                    TileMove move
+                                        = {.fromRow = i, .fromCol = col, .toRow = i, .toCol = j, .merged = true};
                                     tileMoves.append(move);
                                     processed[i][col] = true;
                                     isMerged          = true;
@@ -511,7 +521,8 @@ bool MainWindow::moveTiles(int direction) {
                                 for (int col = j + 1; col < 4; ++col) {
                                     if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
                                         // 找到了移动源
-                                        TileMove move = {i, col, i, j, false};
+                                        TileMove move
+                                            = {.fromRow = i, .fromCol = col, .toRow = i, .toCol = j, .merged = false};
                                         tileMoves.append(move);
                                         processed[i][col] = true;
                                         break;
@@ -538,7 +549,7 @@ bool MainWindow::moveTiles(int direction) {
                 QPoint to   = tileLabels[move.toRow][move.toCol]->pos();
 
                 // 使用源位置的标签创建一个临时标签来执行动画
-                QLabel* tempLabel = new QLabel(ui->gameBoard);
+                auto* tempLabel = new QLabel(ui->gameBoard);
                 tempLabel->setGeometry(from.x(),
                                        from.y(),
                                        tileLabels[move.fromRow][move.fromCol]->width(),
@@ -549,7 +560,7 @@ bool MainWindow::moveTiles(int direction) {
                 tempLabel->show();
 
                 // 创建移动动画
-                QPropertyAnimation* animation = new QPropertyAnimation(tempLabel, "geometry");
+                auto* animation = new QPropertyAnimation(tempLabel, "geometry");
                 animation->setDuration(100);
                 animation->setStartValue(QRect(from.x(), from.y(), tempLabel->width(), tempLabel->height()));
                 animation->setEndValue(QRect(to.x(), to.y(), tempLabel->width(), tempLabel->height()));
@@ -602,8 +613,8 @@ void MainWindow::generateNewTile(bool animate) {
     if (animate) {
         pendingAnimations++;  // 增加正在进行的动画计数
 
-        QLabel* label                 = tileLabels[row][col];
-        QPropertyAnimation* animation = new QPropertyAnimation(label, "geometry", this);
+        QLabel* label   = tileLabels[row][col];
+        auto* animation = new QPropertyAnimation(label, "geometry", this);
         animation->setDuration(200);  // 设置动画持续时间为200毫秒
         QRect rect = label->geometry();
 
@@ -627,7 +638,7 @@ void MainWindow::updateTileAppearance(int row, int col) {
     }
 
     // 确保tileLabels已初始化且索引有效
-    if (tileLabels.size() <= row || tileLabels[row].size() <= col || !tileLabels[row][col]) {
+    if (tileLabels.size() <= row || tileLabels[row].size() <= col || tileLabels[row][col] == nullptr) {
         return;
     }
 
@@ -653,7 +664,7 @@ void MainWindow::updateScore(int newScore) {
 
         // 将标签定位在分数显示区域附近
         QPoint scorePos = ui->scoreValue->mapToParent(QPoint(0, 0));
-        scoreAddLabel->move(scorePos.x() + ui->scoreValue->width() / 2, scorePos.y());
+        scoreAddLabel->move(scorePos.x() + (ui->scoreValue->width() / 2), scorePos.y());
         scoreAddLabel->show();
 
         // 创建透明度动画
@@ -694,7 +705,7 @@ void MainWindow::updateStatus(QString const& message) {
 }
 
 // getTileStyleSheet: 根据方块的值返回对应的样式字符串（包括背景色、字体颜色、字体大小等）
-QString MainWindow::getTileStyleSheet(int value) const {
+QString MainWindow::getTileStyleSheet(int value) {
     QString style = "QLabel { ";
     // 根据value设定不同的背景颜色和文字样式
     switch (value) {
@@ -734,12 +745,24 @@ QString MainWindow::getTileStyleSheet(int value) const {
         case 2048:
             style += "background-color: #edc22e; color: white; ";
             break;
+        case 4096:
+            style += "background-color: #edc11e; color: white; ";
+            break;
+        case 8192:
+            style += "background-color: #edc00e; color: white; ";
+            break;
+        case 16384:
+            style += "background-color: #edbf0e; color: white; ";
+            break;
+        case 32768:
+            style += "background-color: #edbe0e; color: white; ";
+            break;
         default:
             style += "background-color: #3c3a32; color: white; ";
     }
 
     // 根据数字的位数调整字体大小
-    int digits = (value == 0) ? 0 : (int)log10(value) + 1;
+    int digits = (value == 0) ? 0 : static_cast<int>(log10(value)) + 1;
     switch (digits) {
         case 0:
         case 1:
@@ -904,7 +927,7 @@ QVector<QPair<int, int>> MainWindow::getEmptyTiles() const {
 }
 
 // canMoveTiles: 检查是否可以向指定方向移动
-bool MainWindow::canMoveTiles(QVector<QVector<int>>& testBoard, int direction) const {
+bool MainWindow::canMoveTiles(QVector<QVector<int>>& testBoard, int direction) {
     QVector<QVector<int>> boardCopy = testBoard;
     bool moved                      = false;
 
@@ -1095,7 +1118,7 @@ void MainWindow::on_autoPlayButton_clicked() {
 
     if (autoPlayActive) {
         // 开始自动操作
-        if (autoPlayButton) {
+        if (autoPlayButton != nullptr) {
             autoPlayButton->setText("Stop Auto");
         }
 
@@ -1108,7 +1131,7 @@ void MainWindow::on_autoPlayButton_clicked() {
         updateStatus("Auto play started");
     } else {
         // 停止自动操作
-        if (autoPlayButton) {
+        if (autoPlayButton != nullptr) {
             autoPlayButton->setText("Auto Play");
         }
 
@@ -1133,7 +1156,7 @@ void MainWindow::autoPlayStep() {
         qDebug() << "No moves available, stopping auto play";
         autoPlayActive              = false;
         QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-        if (autoPlayButton) {
+        if (autoPlayButton != nullptr) {
             autoPlayButton->setChecked(false);
             autoPlayButton->setText("Auto Play");
         }
@@ -1222,7 +1245,7 @@ void MainWindow::autoPlayStep() {
                         // 游戏结束时停止自动操作
                         autoPlayActive              = false;
                         QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-                        if (autoPlayButton) {
+                        if (autoPlayButton != nullptr) {
                             autoPlayButton->setChecked(false);
                             autoPlayButton->setText("Auto Play");
                         }
@@ -1268,7 +1291,7 @@ void MainWindow::autoPlayStep() {
                     // 游戏结束时停止自动操作
                     autoPlayActive              = false;
                     QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-                    if (autoPlayButton) {
+                    if (autoPlayButton != nullptr) {
                         autoPlayButton->setChecked(false);
                         autoPlayButton->setText("Auto Play");
                     }
@@ -1319,7 +1342,7 @@ void MainWindow::autoPlayStep() {
                             showGameOverMessage();
                             autoPlayActive              = false;
                             QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-                            if (autoPlayButton) {
+                            if (autoPlayButton != nullptr) {
                                 autoPlayButton->setChecked(false);
                                 autoPlayButton->setText("Auto Play");
                             }
@@ -1359,7 +1382,7 @@ void MainWindow::autoPlayStep() {
                         showGameOverMessage();
                         autoPlayActive              = false;
                         QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-                        if (autoPlayButton) {
+                        if (autoPlayButton != nullptr) {
                             autoPlayButton->setChecked(false);
                             autoPlayButton->setText("Auto Play");
                         }
@@ -1378,7 +1401,7 @@ void MainWindow::autoPlayStep() {
                     showGameOverMessage();
                     autoPlayActive              = false;
                     QPushButton* autoPlayButton = findChild<QPushButton*>("autoPlayButton");
-                    if (autoPlayButton) {
+                    if (autoPlayButton != nullptr) {
                         autoPlayButton->setChecked(false);
                         autoPlayButton->setText("Auto Play");
                     }
@@ -1630,7 +1653,7 @@ void MainWindow::on_learnButton_clicked() {
 
     // 禁用学习按钮，防止重复点击
     QPushButton* learnButton = findChild<QPushButton*>("learnButton");
-    if (learnButton) {
+    if (learnButton != nullptr) {
         learnButton->setEnabled(false);
     }
 
