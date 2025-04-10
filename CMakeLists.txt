@@ -26,11 +26,20 @@ set(CORE_SOURCES
         core/GameState.h
 )
 
+set(UI_SOURCES
+        ui/GameView.cpp
+        ui/GameView.h
+        ui/TileView.cpp
+        ui/TileView.h
+)
+
 set(UTILS_SOURCES
         utils/StyleManager.cpp
         utils/StyleManager.h
         utils/AnimationManager.cpp
         utils/AnimationManager.h
+        utils/GameController.cpp
+        utils/GameController.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -38,6 +47,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
         ${CORE_SOURCES}
+        ${UI_SOURCES}
         ${UTILS_SOURCES}
     )
 
@@ -50,6 +60,7 @@ else()
         add_library(2048-qt SHARED
             ${PROJECT_SOURCES}
             ${CORE_SOURCES}
+            ${UI_SOURCES}
             ${UTILS_SOURCES}
         )
 
@@ -59,6 +70,7 @@ else()
         add_executable(2048-qt
             ${PROJECT_SOURCES}
             ${CORE_SOURCES}
+            ${UI_SOURCES}
             ${UTILS_SOURCES}
         )
     endif()

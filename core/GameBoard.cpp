@@ -30,6 +30,10 @@ bool GameBoard::moveTiles(int direction) {
             for (int row = 0; row < size; row++) {
                 if (board[row][col] != 0) {
                     if (row != writePos) {
+                        // 记录移动信息
+                        TileMove move = {row, col, writePos, col, false, board[row][col]};
+                        lastMoves.append(move);
+
                         board[writePos][col] = board[row][col];
                         board[row][col]      = 0;
                     }
@@ -70,6 +74,10 @@ bool GameBoard::moveTiles(int direction) {
             for (int col = size - 1; col >= 0; col--) {
                 if (board[row][col] != 0) {
                     if (col != writePos) {
+                        // 记录移动信息
+                        TileMove move = {row, col, row, writePos, false, board[row][col]};
+                        lastMoves.append(move);
+
                         board[row][writePos] = board[row][col];
                         board[row][col]      = 0;
                     }
@@ -110,6 +118,10 @@ bool GameBoard::moveTiles(int direction) {
             for (int row = size - 1; row >= 0; row--) {
                 if (board[row][col] != 0) {
                     if (row != writePos) {
+                        // 记录移动信息
+                        TileMove move = {row, col, writePos, col, false, board[row][col]};
+                        lastMoves.append(move);
+
                         board[writePos][col] = board[row][col];
                         board[row][col]      = 0;
                     }
@@ -150,6 +162,10 @@ bool GameBoard::moveTiles(int direction) {
             for (int col = 0; col < size; col++) {
                 if (board[row][col] != 0) {
                     if (col != writePos) {
+                        // 记录移动信息
+                        TileMove move = {row, col, row, writePos, false, board[row][col]};
+                        lastMoves.append(move);
+
                         board[row][writePos] = board[row][col];
                         board[row][col]      = 0;
                     }

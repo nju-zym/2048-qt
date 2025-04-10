@@ -1,6 +1,10 @@
 #include "StyleManager.h"
 
+#include <QMutex>
 #include <cmath>
+
+// 定义全局互斥锁
+QMutex g_styleSheetMutex;
 
 QString StyleManager::getTileStyleSheet(int value) {
     QString style = "QLabel { ";
