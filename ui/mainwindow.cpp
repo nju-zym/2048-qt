@@ -1,9 +1,12 @@
 #include "mainwindow.h"
 
+#include "ai/autoplayer.h"
 #include "ui_mainwindow.h"
 
+#include <QDir>
 #include <QMessageBox>
 #include <QParallelAnimationGroup>
+#include <QProgressDialog>
 #include <QPropertyAnimation>
 #include <QRandomGenerator>
 #include <QRect>
@@ -20,32 +23,37 @@ bool winAlertShown = false;
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
-      board(4, QVector<int>(4, 0)),
+      gameBoard(new Board()),
       score(0),
       bestScore(0),
       animationInProgress(false),
-      pendingAnimations(0) {
+      pendingAnimations(0),
+      autoPlayer(nullptr),
+      autoPlayTimer(nullptr) {
     ui->setupUi(this);  // 初始化UI界面
 
     setFocusPolicy(Qt::StrongFocus);  // 设置焦点策略，确保窗口能响应键盘事件
-    setupBoard();                     // 初始化一个4x4的游戏棋盘，每个元素设为0
     initializeTiles();                // 初始化棋盘上对应的标签，清除旧标签、创建新标签并放到布局中
+    setupAutoPlay();                  // 初始化自动游戏功能
     startNewGame();                   // 开始一个新的游戏，重置棋盘状态、分数、历史记录并随机生成两个数字
 }
 
 // 析构函数：清理分配的UI资源
 MainWindow::~MainWindow() {
-    delete ui;  // 释放UI占用资源
-}
-
-// setupBoard: 初始化棋盘数据，确保创建了一个4x4的矩阵，并将所有值设为0
-void MainWindow::setupBoard() {
-    // 确保游戏板是4x4的，并且所有值初始化为0
-    board.clear();    // 清除旧棋盘数据
-    board.resize(4);  // 设置棋盘行数为4
-    for (int i = 0; i < 4; ++i) {
-        board[i].resize(4, 0);  // 每一行设置4个元素，并初始为0
+    if (autoPlayTimer) {
+        autoPlayTimer->stop();
+        delete autoPlayTimer;
     }
+
+    if (autoPlayer) {
+        delete autoPlayer;
+    }
+
+    if (gameBoard) {
+        delete gameBoard;
+    }
+
+    delete ui;  // 释放UI占用资源
 }
 
 // initializeTiles: 初始化显示棋盘数字的标签
@@ -91,7 +99,7 @@ void MainWindow::initializeTiles() {
 
 // startNewGame: 重置游戏状态，清除旧数据，并初始化新的游戏开始状态
 void MainWindow::startNewGame() {
-    setupBoard();           // 重新初始化棋盘数据
+    gameBoard->init();      // 重新初始化棋盘数据
     winAlertShown = false;  // 重置胜利提示标识
 
     // 如果标签未初始化，则先调用initializeTiles()初始化
@@ -136,8 +144,8 @@ void MainWindow::on_undoButton_clicked() {
     int lastScore                               = lastState.second;
     history.pop_back();  // 移除最后一步记录
 
-    board = lastBoard;       // 恢复棋盘状态
-    updateScore(lastScore);  // 恢复显示分数
+    gameBoard->setBoard(lastBoard);  // 恢复棋盘状态
+    updateScore(lastScore);          // 恢复显示分数
 
     // 更新每个标签的外观，使UI与恢复后的棋盘数据一致
     for (int i = 0; i < 4; ++i) {
@@ -218,323 +226,38 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 
 // moveTiles: 根据方向对所有方块进行移动合并操作，并更新分数及UI显示
 bool MainWindow::moveTiles(int direction) {
-    QVector<QVector<int>> previousBoard = board;  // 保存移动前的棋盘状态
-    int scoreGained                     = 0;      // 本次移动获得的分数
+    // 保存移动前的棋盘状态
+    QVector<QVector<int>> previousBoard = gameBoard->getBoard();
 
-    // 根据传入的方向执行不同的移动和合并逻辑
-    if (direction == 0) {  // 向上移动
-        for (int col = 0; col < 4; col++) {
-            int writePos = 0;
-            // 第一步：将非零方块上移，消除中间空隙
-            for (int row = 0; row < 4; row++) {
-                if (board[row][col] != 0) {
-                    if (row != writePos) {
-                        board[writePos][col] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos++;
-                }
-            }
-            // 第二步：合并相邻且相同的方块
-            for (int row = 0; row < 3; row++) {
-                if (board[row][col] != 0 && board[row][col] == board[row + 1][col]) {
-                    board[row][col]     *= 2;
-                    scoreGained         += board[row][col];  // 更新合并后获得的分数
-                    board[row + 1][col]  = 0;
-                }
-            }
-            // 第三步：再次上移以消除合并后产生的空隙
-            writePos = 0;
-            for (int row = 0; row < 4; row++) {
-                if (board[row][col] != 0) {
-                    if (row != writePos) {
-                        board[writePos][col] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos++;
-                }
-            }
-        }
-    } else if (direction == 1) {  // 向右移动
-        for (int row = 0; row < 4; row++) {
-            int writePos = 3;
-            // 将非零方块集中到右侧
-            for (int col = 3; col >= 0; col--) {
-                if (board[row][col] != 0) {
-                    if (col != writePos) {
-                        board[row][writePos] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos--;
-                }
-            }
-            // 合并右侧相邻相同的方块
-            for (int col = 3; col > 0; col--) {
-                if (board[row][col] != 0 && board[row][col] == board[row][col - 1]) {
-                    board[row][col]     *= 2;
-                    scoreGained         += board[row][col];
-                    board[row][col - 1]  = 0;
-                }
-            }
-            // 将合并后产生的空隙再次集中到右侧
-            writePos = 3;
-            for (int col = 3; col >= 0; col--) {
-                if (board[row][col] != 0) {
-                    if (col != writePos) {
-                        board[row][writePos] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos--;
-                }
-            }
-        }
-    } else if (direction == 2) {  // 向下移动
-        for (int col = 0; col < 4; col++) {
-            int writePos = 3;
-            // 将非零方块下移，填充底部空缺
-            for (int row = 3; row >= 0; row--) {
-                if (board[row][col] != 0) {
-                    if (row != writePos) {
-                        board[writePos][col] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos--;
-                }
-            }
-            // 合并下侧相邻相同的方块
-            for (int row = 3; row > 0; row--) {
-                if (board[row][col] != 0 && board[row][col] == board[row - 1][col]) {
-                    board[row][col]     *= 2;
-                    scoreGained         += board[row][col];
-                    board[row - 1][col]  = 0;
-                }
-            }
-            // 再次下移以消除中间空隙
-            writePos = 3;
-            for (int row = 3; row >= 0; row--) {
-                if (board[row][col] != 0) {
-                    if (row != writePos) {
-                        board[writePos][col] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos--;
-                }
-            }
-        }
-    } else if (direction == 3) {  // 向左移动
-        for (int row = 0; row < 4; row++) {
-            int writePos = 0;
-            // 将非零方块左移
-            for (int col = 0; col < 4; col++) {
-                if (board[row][col] != 0) {
-                    if (col != writePos) {
-                        board[row][writePos] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos++;
-                }
-            }
-            // 合并左侧相邻且相同的方块
-            for (int col = 0; col < 3; col++) {
-                if (board[row][col] != 0 && board[row][col] == board[row][col + 1]) {
-                    board[row][col]     *= 2;
-                    scoreGained         += board[row][col];
-                    board[row][col + 1]  = 0;
-                }
-            }
-            // 再次左移以填充合并后产生的空隙
-            writePos = 0;
-            for (int col = 0; col < 4; col++) {
-                if (board[row][col] != 0) {
-                    if (col != writePos) {
-                        board[row][writePos] = board[row][col];
-                        board[row][col]      = 0;
-                    }
-                    writePos++;
-                }
-            }
-        }
-    }
+    // 使用Board类的move方法执行移动
+    QPair<bool, int> result = gameBoard->move(direction);
+    bool changed            = result.first;
+    int scoreGained         = result.second;
 
-    // 判断棋盘是否发生了改变
-    bool changed = false;
-    for (int i = 0; i < 4 && !changed; ++i) {
-        for (int j = 0; j < 4 && !changed; ++j) {
-            if (board[i][j] != previousBoard[i][j]) {
-                changed = true;
-            }
-        }
-    }
-
+    // 如果棋盘发生了变化
     if (changed) {
         history.append(qMakePair(previousBoard, score));  // 保存本次移动前的棋盘状态和分数
         updateScore(score + scoreGained);                 // 更新总分
 
-        // 创建一个数据结构来跟踪每个方块的移动
-        struct TileMove {
-            int fromRow, fromCol;  // 原始位置
-            int toRow, toCol;      // 目标位置
-            bool merged;           // 是否发生合并
-        };
-        QVector<TileMove> tileMoves;
-
-        // 创建一个二维数组来跟踪每个位置的方块是否已经被处理过
-        QVector<QVector<bool>> processed(4, QVector<bool>(4, false));
-
-        // 直接比较移动前后的棋盘状态，找出真正移动的方块
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                // 如果当前位置的值在移动前后不同，说明发生了变化
-                if (board[i][j] != previousBoard[i][j]) {
-                    // 如果当前位置有值，需要找出它是从哪里移动过来的
-                    if (board[i][j] != 0) {
-                        // 检查是否是合并的结果（值是移动前某个位置值的两倍）
-                        bool isMerged = false;
-
-                        // 根据移动方向查找可能的源位置
-                        if (direction == 0) {  // 向上移动，检查下方
-                            for (int row = i + 1; row < 4 && !isMerged; ++row) {
-                                if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
-                                    // 找到了合并源
-                                    TileMove move = {row, j, i, j, true};
-                                    tileMoves.append(move);
-                                    processed[row][j] = true;
-                                    isMerged          = true;
-                                }
-                            }
-
-                            // 如果不是合并，则是简单的移动
-                            if (!isMerged) {
-                                for (int row = i + 1; row < 4; ++row) {
-                                    if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
-                                        // 找到了移动源
-                                        TileMove move = {row, j, i, j, false};
-                                        tileMoves.append(move);
-                                        processed[row][j] = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        } else if (direction == 1) {  // 向右移动，检查左方
-                            for (int col = j - 1; col >= 0 && !isMerged; --col) {
-                                if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
-                                    // 找到了合并源
-                                    TileMove move = {i, col, i, j, true};
-                                    tileMoves.append(move);
-                                    processed[i][col] = true;
-                                    isMerged          = true;
-                                }
-                            }
-
-                            // 如果不是合并，则是简单的移动
-                            if (!isMerged) {
-                                for (int col = j - 1; col >= 0; --col) {
-                                    if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
-                                        // 找到了移动源
-                                        TileMove move = {i, col, i, j, false};
-                                        tileMoves.append(move);
-                                        processed[i][col] = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        } else if (direction == 2) {  // 向下移动，检查上方
-                            for (int row = i - 1; row >= 0 && !isMerged; --row) {
-                                if (previousBoard[row][j] * 2 == board[i][j] && !processed[row][j]) {
-                                    // 找到了合并源
-                                    TileMove move = {row, j, i, j, true};
-                                    tileMoves.append(move);
-                                    processed[row][j] = true;
-                                    isMerged          = true;
-                                }
-                            }
-
-                            // 如果不是合并，则是简单的移动
-                            if (!isMerged) {
-                                for (int row = i - 1; row >= 0; --row) {
-                                    if (previousBoard[row][j] == board[i][j] && !processed[row][j]) {
-                                        // 找到了移动源
-                                        TileMove move = {row, j, i, j, false};
-                                        tileMoves.append(move);
-                                        processed[row][j] = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        } else if (direction == 3) {  // 向左移动，检查右方
-                            for (int col = j + 1; col < 4 && !isMerged; ++col) {
-                                if (previousBoard[i][col] * 2 == board[i][j] && !processed[i][col]) {
-                                    // 找到了合并源
-                                    TileMove move = {i, col, i, j, true};
-                                    tileMoves.append(move);
-                                    processed[i][col] = true;
-                                    isMerged          = true;
-                                }
-                            }
-
-                            // 如果不是合并，则是简单的移动
-                            if (!isMerged) {
-                                for (int col = j + 1; col < 4; ++col) {
-                                    if (previousBoard[i][col] == board[i][j] && !processed[i][col]) {
-                                        // 找到了移动源
-                                        TileMove move = {i, col, i, j, false};
-                                        tileMoves.append(move);
-                                        processed[i][col] = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 更新所有方块的外观
+        // 更新所有方块的显示
         for (int i = 0; i < 4; ++i) {
             for (int j = 0; j < 4; ++j) {
                 updateTileAppearance(i, j);
             }
         }
 
-        // 执行移动动画
-        for (TileMove const& move : tileMoves) {
-            if (move.fromRow != move.toRow || move.fromCol != move.toCol) {
-                QPoint from = tileLabels[move.fromRow][move.fromCol]->pos();
-                QPoint to   = tileLabels[move.toRow][move.toCol]->pos();
+        // 生成新的方块
+        generateNewTile();
 
-                // 使用源位置的标签创建一个临时标签来执行动画
-                QLabel* tempLabel = new QLabel(ui->gameBoard);
-                tempLabel->setGeometry(from.x(),
-                                       from.y(),
-                                       tileLabels[move.fromRow][move.fromCol]->width(),
-                                       tileLabels[move.fromRow][move.fromCol]->height());
-                tempLabel->setAlignment(Qt::AlignCenter);
-                tempLabel->setText(QString::number(previousBoard[move.fromRow][move.fromCol]));
-                tempLabel->setStyleSheet(getTileStyleSheet(previousBoard[move.fromRow][move.fromCol]));
-                tempLabel->show();
-
-                // 创建移动动画
-                QPropertyAnimation* animation = new QPropertyAnimation(tempLabel, "geometry");
-                animation->setDuration(100);
-                animation->setStartValue(QRect(from.x(), from.y(), tempLabel->width(), tempLabel->height()));
-                animation->setEndValue(QRect(to.x(), to.y(), tempLabel->width(), tempLabel->height()));
-                animation->setEasingCurve(QEasingCurve::OutQuad);
-
-                // 动画结束后删除临时标签
-                connect(animation, &QPropertyAnimation::finished, [tempLabel, this, move]() {
-                    tempLabel->deleteLater();
-                    pendingAnimations--;
-
-                    // 如果发生了合并，添加合并动画
-                    if (move.merged) {
-                        animateTileMerge(tileLabels[move.toRow][move.toCol]);
-                    }
-                });
-
-                pendingAnimations++;
-                animation->start(QPropertyAnimation::DeleteWhenStopped);
-            }
+        // 检查游戏是否结束
+        if (isGameOver()) {
+            QMessageBox::information(this, "Game Over", "Game Over! No more moves available.");
+        }
+        // 检查是否达到胜利条件
+        else if (isGameWon() && !winAlertShown) {
+            winAlertShown = true;  // 设置标志，避免重复显示
+            QMessageBox::information(
+                this, "Congratulations", "You've reached 2048! Continue playing to get a higher score!");
         }
     }
 
@@ -548,21 +271,19 @@ void MainWindow::generateNewTile(bool animate) {
         initializeTiles();
     }
 
-    QVector<QPair<int, int>> emptyTiles = getEmptyTiles();  // 获取所有空位置
+    // 使用Board类生成新方块
+    QPair<QPair<int, int>, int> newTile = gameBoard->generateNewTile();
+    int row                             = newTile.first.first;
+    int col                             = newTile.first.second;
+    int newValue                        = newTile.second;
 
-    if (emptyTiles.isEmpty()) {
-        return;  // 无空格则不生成新方块
+    // 如果无法生成新方块，直接返回
+    if (row == -1 || col == -1 || newValue == 0) {
+        return;
     }
 
-    int randomIndex = QRandomGenerator::global()->bounded(emptyTiles.size());
-    int row         = emptyTiles[randomIndex].first;
-    int col         = emptyTiles[randomIndex].second;
-
-    // 90%的概率生成数字2，10%生成数字4
-    int newValue = (QRandomGenerator::global()->bounded(10) < 9) ? 2 : 4;
-
-    board[row][col] = newValue;      // 更新棋盘数据
-    updateTileAppearance(row, col);  // 更新对应标签的外观
+    // 更新对应标签的外观
+    updateTileAppearance(row, col);
 
     // 只有在需要动画时才添加动画效果
     if (animate) {
@@ -588,7 +309,7 @@ void MainWindow::generateNewTile(bool animate) {
 // updateTileAppearance: 根据棋盘数据更新指定位置标签的样式和显示数字
 void MainWindow::updateTileAppearance(int row, int col) {
     // 检查索引是否有效
-    if (row < 0 || row >= board.size() || col < 0 || col >= board[0].size()) {
+    if (row < 0 || row >= 4 || col < 0 || col >= 4) {
         return;
     }
 
@@ -597,7 +318,7 @@ void MainWindow::updateTileAppearance(int row, int col) {
         return;
     }
 
-    int value     = board[row][col];
+    int value     = gameBoard->getTileValue(row, col);
     QLabel* label = tileLabels[row][col];
 
     label->setStyleSheet(getTileStyleSheet(value));  // 根据数字获取对应样式
@@ -776,43 +497,12 @@ void MainWindow::animateTileMerge(QLabel* label) {
 
 // isGameOver: 检查游戏是否结束（没有空格且相邻数字均不同）
 bool MainWindow::isGameOver() const {
-    // 首先检查是否存在空格
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (board[i][j] == 0) {
-                return false;
-            }
-        }
-    }
-    // 检查水平方向相邻数字是否相同
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (board[i][j] == board[i][j + 1]) {
-                return false;
-            }
-        }
-    }
-    // 检查垂直方向相邻数字是否相同
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (board[i][j] == board[i + 1][j]) {
-                return false;
-            }
-        }
-    }
-    return true;  // 没有空格且无法合并，游戏结束
+    return gameBoard->isGameOver();
 }
 
 // isGameWon: 检查是否有方块达到2048，即玩家是否获胜
 bool MainWindow::isGameWon() const {
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (board[i][j] == 2048) {
-                return true;
-            }
-        }
-    }
-    return false;  // 没有达到2048则继续游戏
+    return gameBoard->isGameWon();
 }
 
 // showGameOverMessage: 弹出游戏结束提示，并提供重新开始游戏的选项
@@ -848,23 +538,162 @@ void MainWindow::showWinMessage() {
 // isTileEmpty: 检查指定位置是否为空（即存储数字为0）
 bool MainWindow::isTileEmpty(int row, int col) const {
     // 检查索引是否有效
-    if (row < 0 || row >= board.size() || col < 0 || col >= board[0].size()) {
+    if (row < 0 || row >= 4 || col < 0 || col >= 4) {
         return false;  // 越界则返回false
     }
-    return board[row][col] == 0;
+    return gameBoard->getTileValue(row, col) == 0;
 }
 
 // getEmptyTiles: 遍历棋盘，返回所有空位置的行列坐标
 QVector<QPair<int, int>> MainWindow::getEmptyTiles() const {
-    QVector<QPair<int, int>> emptyTiles;
+    return gameBoard->getEmptyTiles();
+}
 
-    for (int row = 0; row < board.size(); ++row) {
-        for (int col = 0; col < board[row].size(); ++col) {
-            if (board[row][col] == 0) {
-                emptyTiles.append(qMakePair(row, col));
-            }
-        }
+// setupAutoPlay: 初始化自动游戏功能
+void MainWindow::setupAutoPlay() {
+    // 创建自动游戏对象
+    autoPlayer = new AutoPlayer(this);
+
+    // 创建定时器，用于定时执行自动移动
+    autoPlayTimer = new QTimer(this);
+    autoPlayTimer->setInterval(200);  // 设置间隔为200毫秒
+
+    // 连接定时器信号到自动移动函数
+    connect(autoPlayTimer, &QTimer::timeout, this, &MainWindow::performAutoMove);
+
+    // 连接自动游戏对象的信号
+    connect(autoPlayer, &AutoPlayer::moveDecided, this, &MainWindow::onMoveDecided);
+    connect(autoPlayer, &AutoPlayer::trainingProgress, this, &MainWindow::onTrainingProgress);
+    connect(autoPlayer, &AutoPlayer::trainingComplete, this, &MainWindow::onTrainingComplete);
+}
+
+// performAutoMove: 执行自动移动
+void MainWindow::performAutoMove() {
+    // 如果游戏结束，停止自动游戏
+    if (isGameOver()) {
+        autoPlayTimer->stop();
+        autoPlayer->stopAutoPlay();
+        updateStatus("Auto play stopped.");
+        ui->autoPlayButton->setText("Auto Play");
+        return;
     }
 
-    return emptyTiles;
+    // 如果动画正在进行，等待下一次定时器触发
+    if (animationInProgress) {
+        return;
+    }
+
+    // 请求自动玩家计算下一步移动
+    // 移动将通过 onMoveDecided 信号处理
+    autoPlayer->getBestMove(gameBoard->getBoard());
+}
+
+// on_autoPlayButton_clicked: 自动游戏按钮点击事件
+void MainWindow::on_autoPlayButton_clicked() {
+    if (autoPlayTimer->isActive()) {
+        // 如果定时器正在运行，停止自动游戏
+        autoPlayTimer->stop();
+        autoPlayer->stopAutoPlay();
+        updateStatus("Auto play stopped.");
+        ui->autoPlayButton->setText("Auto Play");
+    } else {
+        // 否则开始自动游戏
+        autoPlayer->startAutoPlay();
+        autoPlayTimer->start();
+        updateStatus("Auto play started.");
+        ui->autoPlayButton->setText("Stop Auto");
+    }
+}
+
+// on_trainButton_clicked: 训练按钮点击事件
+void MainWindow::on_trainButton_clicked() {
+    if (autoPlayer->isTraining()) {
+        // 如果正在训练，停止训练
+        autoPlayer->stopTraining();
+        updateStatus("Training stopped.");
+        ui->trainButton->setText("Train");
+    } else {
+        // 否则开始训练
+        // 创建进度对话框
+        QProgressDialog* progressDialog = new QProgressDialog("Training in progress...", "Cancel", 0, 100, this);
+        progressDialog->setWindowModality(Qt::WindowModal);
+        progressDialog->setMinimumDuration(0);
+        progressDialog->setValue(0);
+        progressDialog->show();
+
+        // 连接进度信号
+        connect(autoPlayer, &AutoPlayer::trainingProgress, progressDialog, &QProgressDialog::setValue);
+        connect(progressDialog, &QProgressDialog::canceled, autoPlayer, &AutoPlayer::stopTraining);
+
+        // 开始训练，使用异步方式
+        updateStatus("Training started...");
+        ui->trainButton->setText("Stop Training");
+
+        // 在单独的线程中运行训练
+        QTimer::singleShot(0, [this, progressDialog]() {
+            autoPlayer->startTraining(1000);  // 训练1000次
+            progressDialog->deleteLater();
+        });
+    }
+}
+
+// onMoveDecided: 处理自动游戏决定的移动
+void MainWindow::onMoveDecided(int direction) {
+    // 如果没有有效移动或游戏结束，停止自动游戏
+    if (direction == -1 || isGameOver()) {
+        autoPlayTimer->stop();
+        autoPlayer->stopAutoPlay();
+        updateStatus("Auto play stopped.");
+        ui->autoPlayButton->setText("Auto Play");
+        return;
+    }
+
+    // 如果动画正在进行，等待下一次定时器触发
+    if (animationInProgress) {
+        return;
+    }
+
+    // 模拟按键事件
+    QKeyEvent* event = nullptr;
+    switch (direction) {
+        case 0:  // 上
+            event = new QKeyEvent(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+            break;
+        case 1:  // 右
+            event = new QKeyEvent(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            break;
+        case 2:  // 下
+            event = new QKeyEvent(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+            break;
+        case 3:  // 左
+            event = new QKeyEvent(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+            break;
+        default:
+            return;  // 无效方向
+    }
+
+    if (event != nullptr) {
+        // 处理按键事件
+        keyPressEvent(event);
+        delete event;
+    }
+}
+
+// onTrainingProgress: 处理训练进度更新
+void MainWindow::onTrainingProgress(int current, int total) {
+    // 更新状态栏显示训练进度
+    updateStatus(QString("Training progress: %1/%2").arg(current).arg(total));
+}
+
+// onTrainingComplete: 处理训练完成
+void MainWindow::onTrainingComplete() {
+    // 更新UI和状态
+    updateStatus("Training complete!");
+    ui->trainButton->setText("Train");
+
+    // 显示训练结果消息框
+    QMessageBox::information(
+        this,
+        "Training Complete",
+        "Training has been completed successfully. The AI has learned new parameters for better gameplay.");
 }
