@@ -1,0 +1,301 @@
+#include "BitBoard.h"
+#include <sstream>
+#include <iomanip>
+#include <cmath>
+
+BitBoard::BitBoard() : board(0) {}
+
+BitBoard::BitBoard(const GameBoard& gameBoard) : board(0) {
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int value = gameBoard.getTileValue(row, col);
+            if (value > 0) {
+                // 计算log2(value)，即2的幂次
+                int power = static_cast<int>(std::log2(value));
+                set(row, col, power);
+            }
+        }
+    }
+}
+
+BitBoard::BitBoard(uint64_t board) : board(board) {}
+
+int BitBoard::get(int row, int col) const {
+    int shift = (row * 16) + (col * 4);
+    return (board >> shift) & 0xF;
+}
+
+void BitBoard::set(int row, int col, int value) {
+    int shift = (row * 16) + (col * 4);
+    // 清除原有值
+    board &= ~(static_cast<uint64_t>(0xF) << shift);
+    // 设置新值
+    board |= (static_cast<uint64_t>(value & 0xF) << shift);
+}
+
+uint64_t BitBoard::getBoard() const {
+    return board;
+}
+
+BitBoard BitBoard::move(Direction direction) const {
+    uint64_t newBoard;
+    
+    switch (direction) {
+        case UP:
+            newBoard = moveUp(board);
+            break;
+        case RIGHT:
+            newBoard = moveRight(board);
+            break;
+        case DOWN:
+            newBoard = moveDown(board);
+            break;
+        case LEFT:
+            newBoard = moveLeft(board);
+            break;
+        default:
+            newBoard = board;
+            break;
+    }
+    
+    return BitBoard(newBoard);
+}
+
+bool BitBoard::isGameOver() const {
+    // 如果有空位，游戏未结束
+    if (board != (board | 0x0000000000000000)) {
+        return false;
+    }
+    
+    // 检查是否可以移动
+    return *this == move(UP) && *this == move(RIGHT) && *this == move(DOWN) && *this == move(LEFT);
+}
+
+std::vector<BitBoard::Position> BitBoard::getEmptyPositions() const {
+    std::vector<Position> emptyPositions;
+    
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            if (get(row, col) == 0) {
+                emptyPositions.emplace_back(row, col);
+            }
+        }
+    }
+    
+    return emptyPositions;
+}
+
+BitBoard BitBoard::placeNewTile(const Position& pos, int value) const {
+    BitBoard newBoard = *this;
+    // 计算log2(value)，即2的幂次
+    int power = static_cast<int>(std::log2(value));
+    newBoard.set(pos.row, pos.col, power);
+    return newBoard;
+}
+
+std::string BitBoard::toString() const {
+    std::stringstream ss;
+    
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int value = get(row, col);
+            if (value == 0) {
+                ss << std::setw(5) << ".";
+            } else {
+                ss << std::setw(5) << (1 << value);
+            }
+        }
+        ss << std::endl;
+    }
+    
+    return ss.str();
+}
+
+bool BitBoard::operator==(const BitBoard& other) const {
+    return board == other.board;
+}
+
+bool BitBoard::operator!=(const BitBoard& other) const {
+    return board != other.board;
+}
+
+uint64_t BitBoard::hash() const {
+    // 直接使用棋盘的64位整数表示作为哈希值
+    return board;
+}
+
+uint64_t BitBoard::moveUp(uint64_t board) {
+    uint64_t result = 0;
+    
+    // 转置棋盘
+    uint64_t transposed = 0;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int shift1 = (row * 16) + (col * 4);
+            int shift2 = (col * 16) + (row * 4);
+            uint64_t value = (board >> shift1) & 0xF;
+            transposed |= (value << shift2);
+        }
+    }
+    
+    // 对每一行执行左移操作
+    for (int row = 0; row < 4; ++row) {
+        uint16_t rowData = (transposed >> (row * 16)) & 0xFFFF;
+        uint16_t newRow = moveRowLeft(rowData);
+        result |= (static_cast<uint64_t>(newRow) << (row * 16));
+    }
+    
+    // 再次转置回原始方向
+    uint64_t finalResult = 0;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int shift1 = (row * 16) + (col * 4);
+            int shift2 = (col * 16) + (row * 4);
+            uint64_t value = (result >> shift1) & 0xF;
+            finalResult |= (value << shift2);
+        }
+    }
+    
+    return finalResult;
+}
+
+uint64_t BitBoard::moveRight(uint64_t board) {
+    uint64_t result = 0;
+    
+    // 对每一行执行右移操作
+    for (int row = 0; row < 4; ++row) {
+        uint16_t rowData = (board >> (row * 16)) & 0xFFFF;
+        uint16_t newRow = moveRowRight(rowData);
+        result |= (static_cast<uint64_t>(newRow) << (row * 16));
+    }
+    
+    return result;
+}
+
+uint64_t BitBoard::moveDown(uint64_t board) {
+    uint64_t result = 0;
+    
+    // 转置棋盘
+    uint64_t transposed = 0;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int shift1 = (row * 16) + (col * 4);
+            int shift2 = (col * 16) + (row * 4);
+            uint64_t value = (board >> shift1) & 0xF;
+            transposed |= (value << shift2);
+        }
+    }
+    
+    // 对每一行执行右移操作
+    for (int row = 0; row < 4; ++row) {
+        uint16_t rowData = (transposed >> (row * 16)) & 0xFFFF;
+        uint16_t newRow = moveRowRight(rowData);
+        result |= (static_cast<uint64_t>(newRow) << (row * 16));
+    }
+    
+    // 再次转置回原始方向
+    uint64_t finalResult = 0;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            int shift1 = (row * 16) + (col * 4);
+            int shift2 = (col * 16) + (row * 4);
+            uint64_t value = (result >> shift1) & 0xF;
+            finalResult |= (value << shift2);
+        }
+    }
+    
+    return finalResult;
+}
+
+uint64_t BitBoard::moveLeft(uint64_t board) {
+    uint64_t result = 0;
+    
+    // 对每一行执行左移操作
+    for (int row = 0; row < 4; ++row) {
+        uint16_t rowData = (board >> (row * 16)) & 0xFFFF;
+        uint16_t newRow = moveRowLeft(rowData);
+        result |= (static_cast<uint64_t>(newRow) << (row * 16));
+    }
+    
+    return result;
+}
+
+uint16_t BitBoard::moveRowLeft(uint16_t row) {
+    // 提取每个方块的值
+    uint8_t tiles[4] = {
+        static_cast<uint8_t>(row & 0xF),
+        static_cast<uint8_t>((row >> 4) & 0xF),
+        static_cast<uint8_t>((row >> 8) & 0xF),
+        static_cast<uint8_t>((row >> 12) & 0xF)
+    };
+    
+    // 移除空方块并合并相同值
+    uint8_t newTiles[4] = {0, 0, 0, 0};
+    int idx = 0;
+    
+    // 移除空方块
+    for (int i = 0; i < 4; ++i) {
+        if (tiles[i] != 0) {
+            newTiles[idx++] = tiles[i];
+        }
+    }
+    
+    // 合并相同值
+    for (int i = 0; i < 3; ++i) {
+        if (newTiles[i] != 0 && newTiles[i] == newTiles[i + 1]) {
+            newTiles[i]++;
+            
+            // 移动后面的方块
+            for (int j = i + 1; j < 3; ++j) {
+                newTiles[j] = newTiles[j + 1];
+            }
+            newTiles[3] = 0;
+        }
+    }
+    
+    // 构建新行
+    return static_cast<uint16_t>(newTiles[0]) |
+           (static_cast<uint16_t>(newTiles[1]) << 4) |
+           (static_cast<uint16_t>(newTiles[2]) << 8) |
+           (static_cast<uint16_t>(newTiles[3]) << 12);
+}
+
+uint16_t BitBoard::moveRowRight(uint16_t row) {
+    // 提取每个方块的值
+    uint8_t tiles[4] = {
+        static_cast<uint8_t>(row & 0xF),
+        static_cast<uint8_t>((row >> 4) & 0xF),
+        static_cast<uint8_t>((row >> 8) & 0xF),
+        static_cast<uint8_t>((row >> 12) & 0xF)
+    };
+    
+    // 移除空方块并合并相同值
+    uint8_t newTiles[4] = {0, 0, 0, 0};
+    int idx = 3;
+    
+    // 移除空方块
+    for (int i = 3; i >= 0; --i) {
+        if (tiles[i] != 0) {
+            newTiles[idx--] = tiles[i];
+        }
+    }
+    
+    // 合并相同值
+    for (int i = 3; i > 0; --i) {
+        if (newTiles[i] != 0 && newTiles[i] == newTiles[i - 1]) {
+            newTiles[i]++;
+            
+            // 移动前面的方块
+            for (int j = i - 1; j > 0; --j) {
+                newTiles[j] = newTiles[j - 1];
+            }
+            newTiles[0] = 0;
+        }
+    }
+    
+    // 构建新行
+    return static_cast<uint16_t>(newTiles[0]) |
+           (static_cast<uint16_t>(newTiles[1]) << 4) |
+           (static_cast<uint16_t>(newTiles[2]) << 8) |
+           (static_cast<uint16_t>(newTiles[3]) << 12);
+}

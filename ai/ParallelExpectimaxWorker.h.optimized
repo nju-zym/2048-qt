@@ -1,0 +1,180 @@
+#ifndef PARALLEL_EXPECTIMAX_WORKER_H
+#define PARALLEL_EXPECTIMAX_WORKER_H
+
+#include "BitBoard.h"
+
+#include <QFuture>
+#include <QFutureWatcher>
+#include <QMutex>
+#include <QObject>
+#include <QThread>
+#include <QThreadPool>
+#include <QWaitCondition>
+#include <QtGlobal>
+#include <array>
+#include <unordered_map>
+
+// 包含 QtConcurrent
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QtConcurrent>
+#else
+#include <QtConcurrent/QtConcurrentRun>
+#endif
+
+/**
+ * @brief 方向评估结果结构体
+ */
+struct DirectionScore {
+    int direction;
+    float score;
+    bool valid;
+    
+    DirectionScore() : direction(-1), score(-std::numeric_limits<float>::infinity()), valid(false) {}
+    DirectionScore(int dir, float s, bool v) : direction(dir), score(s), valid(v) {}
+};
+
+/**
+ * @brief 缓存表项结构体
+ */
+struct CacheEntry {
+    float score;
+    int depth;
+    bool maximizingPlayer;
+    
+    CacheEntry() : score(0.0f), depth(0), maximizingPlayer(false) {}
+    CacheEntry(float s, int d, bool m) : score(s), depth(d), maximizingPlayer(m) {}
+};
+
+/**
+ * @brief 并行Expectimax算法工作线程类
+ * 
+ * 使用多线程并行计算不同移动方向的Expectimax算法
+ */
+class ParallelExpectimaxWorker : public QObject {
+    Q_OBJECT
+
+public:
+    explicit ParallelExpectimaxWorker(QObject* parent = nullptr);
+    ~ParallelExpectimaxWorker();
+
+    /**
+     * @brief 开始计算最佳移动
+     * @param board 当前棋盘状态
+     * @param depth 搜索深度
+     */
+    void calculateBestMove(const BitBoard& board, int depth);
+
+    /**
+     * @brief 停止当前计算
+     */
+    void stopCalculation();
+    
+    /**
+     * @brief 设置线程数量
+     * @param count 线程数量
+     */
+    void setThreadCount(int count);
+    
+    /**
+     * @brief 获取线程数量
+     * @return 线程数量
+     */
+    int getThreadCount() const;
+    
+    /**
+     * @brief 清除缓存
+     */
+    void clearCache();
+    
+    /**
+     * @brief 设置缓存大小
+     * @param size 缓存大小
+     */
+    void setCacheSize(size_t size);
+
+signals:
+    /**
+     * @brief 当计算出最佳移动时发出的信号
+     * @param direction 移动方向（0=上, 1=右, 2=下, 3=左）
+     */
+    void moveCalculated(int direction);
+
+private:
+    QThread workerThread;
+    mutable QMutex mutex;
+    QWaitCondition condition;
+    bool abort;
+    bool restart;
+    BitBoard currentBoard;
+    int searchDepth;
+    int threadCount;
+    QThreadPool threadPool;
+    
+    // Future watchers
+    QFutureWatcher<DirectionScore> upWatcher;
+    QFutureWatcher<DirectionScore> rightWatcher;
+    QFutureWatcher<DirectionScore> downWatcher;
+    QFutureWatcher<DirectionScore> leftWatcher;
+    
+    // 缓存表
+    std::unordered_map<uint64_t, CacheEntry> transpositionTable;
+    size_t maxCacheSize;
+    
+    // 评估函数权重
+    static constexpr float MONOTONICITY_WEIGHT = 1.0F;
+    static constexpr float SMOOTHNESS_WEIGHT = 0.1F;
+    static constexpr float FREE_TILES_WEIGHT = 2.7F;
+    static constexpr float MERGE_WEIGHT = 1.0F;
+    static constexpr float TILE_PLACEMENT_WEIGHT = 1.0F;
+
+    /**
+     * @brief 线程主函数
+     */
+    void run();
+
+    /**
+     * @brief 评估单个方向
+     * @param board 当前棋盘状态
+     * @param direction 移动方向
+     * @param depth 搜索深度
+     * @return 方向评估结果
+     */
+    DirectionScore evaluateDirection(const BitBoard& board, int direction, int depth);
+    
+    /**
+     * @brief Expectimax算法核心函数
+     * @param board 当前棋盘状态
+     * @param depth 当前搜索深度
+     * @param maximizingPlayer 是否是最大化玩家的回合
+     * @return 期望得分
+     */
+    float expectimax(const BitBoard& board, int depth, bool maximizingPlayer);
+
+    /**
+     * @brief 评估棋盘状态
+     * @param board 棋盘状态
+     * @return 评估分数
+     */
+    float evaluateBoard(const BitBoard& board);
+    
+    /**
+     * @brief 从缓存中查找棋盘状态
+     * @param board 棋盘状态
+     * @param depth 搜索深度
+     * @param maximizingPlayer 是否是最大化玩家的回合
+     * @param score 输出参数，如果找到则设置为缓存的分数
+     * @return 是否找到
+     */
+    bool lookupCache(const BitBoard& board, int depth, bool maximizingPlayer, float& score);
+    
+    /**
+     * @brief 将棋盘状态添加到缓存
+     * @param board 棋盘状态
+     * @param depth 搜索深度
+     * @param maximizingPlayer 是否是最大化玩家的回合
+     * @param score 分数
+     */
+    void storeCache(const BitBoard& board, int depth, bool maximizingPlayer, float score);
+};
+
+#endif // PARALLEL_EXPECTIMAX_WORKER_H

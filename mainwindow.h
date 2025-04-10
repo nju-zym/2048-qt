@@ -1,12 +1,16 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "ai/BitBoardInitializer.h"
+#include "ai/ExpectimaxAI.h"
+#include "ai/ParallelExpectimaxAI.h"
 #include "ui/GameView.h"
 #include "utils/GameController.h"
 
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMainWindow>
+#include <QProgressDialog>
 #include <QVector>
 
 namespace Ui {
@@ -31,11 +35,15 @@ class MainWindow : public QMainWindow {
     void on_newGameButton_clicked();
     void on_undoButton_clicked();
     void on_settingsButton_clicked();
+    void on_aiButton_clicked();
+    void onBitBoardInitializationCompleted();
 
    private:
     Ui::MainWindow* ui;
     GameView* gameView;
     GameController* gameController;
+    BitBoardInitializer* bitBoardInitializer;
+    QProgressDialog* progressDialog;
 };
 
 #endif  // MAINWINDOW_H

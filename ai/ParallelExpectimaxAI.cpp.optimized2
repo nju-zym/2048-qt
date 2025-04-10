@@ -1,0 +1,182 @@
+#include "ParallelExpectimaxAI.h"
+#include "ParallelExpectimaxWorker.h"
+#include "BitBoard.h"
+#include <QDebug>
+#include <QThread>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+
+ParallelExpectimaxAI::ParallelExpectimaxAI(int depth, int threadCount, QObject* parent)
+    : AIInterface(parent),
+      depth(depth),
+      threadCount(threadCount <= 0 ? QThread::idealThreadCount() * 2 : threadCount),
+      lastCalculatedMove(-1),
+      moveReady(false),
+      useAlphaBeta(true),
+      useCache(true),
+      cacheSize(1000000),
+      useEnhancedEval(true),
+      worker(nullptr) {
+    
+    // 确保BitBoard表已初始化
+    if (!BitBoard::areTablesInitialized()) {
+        qWarning() << "BitBoard tables not initialized! AI may not work correctly.";
+    }
+    
+    // 创建工作线程
+    worker = new ParallelExpectimaxWorker();
+    
+    // 设置线程数量
+    worker->setThreadCount(this->threadCount);
+    
+    // 设置其他配置
+    worker->setUseAlphaBeta(useAlphaBeta);
+    worker->setUseCache(useCache);
+    worker->setCacheSize(cacheSize);
+    worker->setUseEnhancedEval(useEnhancedEval);
+    
+    // 连接信号
+    connect(worker, &ParallelExpectimaxWorker::moveCalculated, this, &ParallelExpectimaxAI::onMoveCalculated, Qt::QueuedConnection);
+    
+    qDebug() << "ParallelExpectimaxAI created with depth" << depth << "and" << this->threadCount << "threads";
+}
+
+ParallelExpectimaxAI::~ParallelExpectimaxAI() {
+    // 释放工作线程
+    if (worker) {
+        delete worker;
+        worker = nullptr;
+    }
+}
+
+int ParallelExpectimaxAI::getBestMove(const GameBoard& board) {
+    QElapsedTimer timer;
+    timer.start();
+    
+    // 如果游戏已经结束，返回任意方向
+    if (board.isGameOver()) {
+        return 0;  // 上
+    }
+    
+    // 创建BitBoard
+    BitBoard bitBoard(board);
+    
+    // 启动工作线程计算
+    worker->calculateBestMove(bitBoard, depth);
+    
+    // 等待计算完成或超时
+    QMutexLocker locker(&mutex);
+    if (!moveReady) {
+        // 等待最多3秒
+        condition.wait(&mutex, 3000);
+    }
+    
+    // 返回上一次计算的移动，或者随机选择一个方向
+    if (moveReady) {
+        int move = lastCalculatedMove;
+        moveReady = false;
+        qDebug() << "Move calculation took" << timer.elapsed() << "ms";
+        return move;
+    } else {
+        // 如果还没有计算结果，随机选择一个方向
+        qDebug() << "Move calculation timed out, using random move";
+        return QRandomGenerator::global()->bounded(4);
+    }
+}
+
+void ParallelExpectimaxAI::onMoveCalculated(int direction) {
+    QMutexLocker locker(&mutex);
+    lastCalculatedMove = direction;
+    moveReady = true;
+    condition.wakeOne();
+    
+    qDebug() << "ParallelExpectimaxAI: Move calculated:" << direction;
+    
+    // 发出移动决策信号
+    emit moveDecided(direction);
+}
+
+void ParallelExpectimaxAI::setDepth(int depth) {
+    this->depth = depth;
+}
+
+int ParallelExpectimaxAI::getDepth() const {
+    return depth;
+}
+
+QString ParallelExpectimaxAI::getName() const {
+    QString name = QString("并行Expectimax (深度 %1, 线程 %2)").arg(depth).arg(threadCount);
+    
+    if (useAlphaBeta) {
+        name += ", Alpha-Beta剪枝";
+    }
+    
+    if (useCache) {
+        name += QString(", 缓存 %1").arg(cacheSize);
+    }
+    
+    if (useEnhancedEval) {
+        name += ", 增强评估";
+    }
+    
+    return name;
+}
+
+void ParallelExpectimaxAI::setThreadCount(int count) {
+    if (count > 0) {
+        threadCount = count;
+        if (worker) {
+            worker->setThreadCount(count);
+        }
+    }
+}
+
+int ParallelExpectimaxAI::getThreadCount() const {
+    return threadCount;
+}
+
+void ParallelExpectimaxAI::setUseAlphaBeta(bool useAlphaBeta) {
+    this->useAlphaBeta = useAlphaBeta;
+    if (worker) {
+        worker->setUseAlphaBeta(useAlphaBeta);
+    }
+}
+
+bool ParallelExpectimaxAI::getUseAlphaBeta() const {
+    return useAlphaBeta;
+}
+
+void ParallelExpectimaxAI::setUseCache(bool useCache) {
+    this->useCache = useCache;
+    if (worker) {
+        worker->setUseCache(useCache);
+    }
+}
+
+bool ParallelExpectimaxAI::getUseCache() const {
+    return useCache;
+}
+
+void ParallelExpectimaxAI::setCacheSize(size_t size) {
+    cacheSize = size;
+    if (worker) {
+        worker->setCacheSize(size);
+    }
+}
+
+size_t ParallelExpectimaxAI::getCacheSize() const {
+    return cacheSize;
+}
+
+void ParallelExpectimaxAI::clearCache() {
+    if (worker) {
+        worker->clearCache();
+    }
+}
+
+void ParallelExpectimaxAI::setUseEnhancedEval(bool useEnhancedEval) {
+    this->useEnhancedEval = useEnhancedEval;
+    if (worker) {
+        worker->setUseEnhancedEval(useEnhancedEval);
+    }
+}

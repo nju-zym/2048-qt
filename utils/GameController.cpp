@@ -6,12 +6,31 @@
 #include <QTimer>
 
 GameController::GameController(MainWindow* parent)
-    : QObject(parent), mainWindow(parent), gameBoard(4), animationInProgress(false) {
+    : QObject(parent),
+      mainWindow(parent),
+      gameBoard(4),
+      animationInProgress(false),
+      ai(nullptr),
+      aiTimer(nullptr),
+      aiRunning(false) {
     // GameView 对象将在 MainWindow 中创建并提供给 GameController
+
+    // 创建AI定时器
+    aiTimer = new QTimer(this);
+    connect(aiTimer, &QTimer::timeout, this, &GameController::onAITimerTimeout);
 }
 
 GameController::~GameController() {
     // GameView 的生命周期由 MainWindow 管理
+
+    // 停止AI
+    stopAI();
+
+    // 释放AI对象
+    if (ai) {
+        delete ai;
+        ai = nullptr;
+    }
 }
 
 void GameController::setGameView(GameView* view) {
@@ -232,6 +251,88 @@ void GameController::showWinMessage() {
 
 bool GameController::isAnimationInProgress() const {
     return animationInProgress;
+}
+
+// AI控制相关方法
+void GameController::startAI(AIInterface* aiInstance) {
+    // 如果已经有AI在运行，先停止
+    stopAI();
+
+    // 释放旧的AI对象
+    if (ai) {
+        delete ai;
+        ai = nullptr;
+    }
+
+    // 设置新的AI对象
+    ai = aiInstance;
+
+    // 连接AI的移动决策信号
+    connect(ai, &AIInterface::moveDecided, this, &GameController::onAIMoveDecided, Qt::DirectConnection);
+
+    qDebug() << "GameController: AI started:" << ai->getName();
+
+    // 启动AI定时器，每500毫秒执行一次
+    aiTimer->start(500);
+    aiRunning = true;
+
+    // 更新状态
+    updateStatus(QString("AI running: %1").arg(ai->getName()));
+}
+
+void GameController::stopAI() {
+    if (aiRunning) {
+        // 停止定时器
+        aiTimer->stop();
+        aiRunning = false;
+
+        // 断开信号连接
+        if (ai) {
+            disconnect(ai, &AIInterface::moveDecided, this, &GameController::onAIMoveDecided);
+        }
+
+        // 更新状态
+        updateStatus("AI stopped");
+    }
+}
+
+bool GameController::isAIRunning() const {
+    return aiRunning;
+}
+
+void GameController::onAITimerTimeout() {
+    // 如果动画正在进行或没有AI，则跳过
+    if (animationInProgress || !ai) {
+        return;
+    }
+
+    qDebug() << "GameController: AI timer timeout, calculating next move";
+
+    // 让AI开始计算下一步移动
+    // 计算结果将通过moveDecided信号发送
+    ai->getBestMove(gameBoard);
+}
+
+void GameController::onAIMoveDecided(int direction) {
+    qDebug() << "GameController: AI move decided:" << direction;
+
+    // 如果动画正在进行或没有AI，则跳过
+    if (animationInProgress || !ai || !aiRunning) {
+        qDebug() << "GameController: Skipping AI move, animation in progress or AI not running";
+        return;
+    }
+
+    // 检查移动是否有效
+    GameBoard testBoard = gameBoard;
+    bool validMove      = testBoard.moveTiles(direction);
+
+    qDebug() << "GameController: AI move valid:" << validMove;
+
+    // 只有当移动有效时才执行
+    if (validMove) {
+        // 执行移动
+        handleMove(direction);
+    }
 }
 
 // 实现更新分数和状态的函数

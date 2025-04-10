@@ -1,6 +1,7 @@
 #ifndef GAMECONTROLLER_H
 #define GAMECONTROLLER_H
 
+#include "../ai/AIInterface.h"
 #include "../core/GameBoard.h"
 #include "../core/GameState.h"
 #include "../ui/GameView.h"
@@ -8,6 +9,7 @@
 #include <QKeyEvent>
 #include <QObject>
 #include <QPoint>
+#include <QTimer>
 
 class MainWindow;
 
@@ -34,8 +36,15 @@ class GameController : public QObject {
     void updateScore(int newScore);
     void updateStatus(QString const& message);
 
+    // AI控制
+    void startAI(AIInterface* ai);
+    void stopAI();
+    bool isAIRunning() const;
+
    public slots:
     void onAnimationFinished();
+    void onAITimerTimeout();
+    void onAIMoveDecided(int direction);
 
    private:
     MainWindow* mainWindow;
@@ -44,6 +53,11 @@ class GameController : public QObject {
     GameView* gameView;
 
     bool animationInProgress;
+
+    // AI相关
+    AIInterface* ai;
+    QTimer* aiTimer;
+    bool aiRunning;
 
     // 游戏状态处理
     void handleGameWon();

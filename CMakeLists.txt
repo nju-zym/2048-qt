@@ -9,8 +9,8 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Concurrent)
 
 set(PROJECT_SOURCES
         main.cpp
@@ -31,6 +31,8 @@ set(UI_SOURCES
         ui/GameView.h
         ui/TileView.cpp
         ui/TileView.h
+        ui/AIConfigDialog.cpp
+        ui/AIConfigDialog.h
 )
 
 set(UTILS_SOURCES
@@ -42,6 +44,34 @@ set(UTILS_SOURCES
         utils/GameController.h
 )
 
+set(AI_SOURCES
+        ai/AIInterface.h
+        ai/BitBoard.cpp
+        ai/BitBoard.h
+        ai/BitBoardInitializer.cpp
+        ai/BitBoardInitializer.h
+        ai/ExpectimaxAI.cpp
+        ai/ExpectimaxAI.h
+        ai/ExpectimaxWorker.cpp
+        ai/ExpectimaxWorker.h
+        ai/ParallelExpectimaxAI.cpp
+        ai/ParallelExpectimaxAI.h
+        ai/ParallelExpectimaxWorker.cpp
+        ai/ParallelExpectimaxWorker.h
+        ai/evaluation/MonotonicityEval.cpp
+        ai/evaluation/MonotonicityEval.h
+        ai/evaluation/SmoothnessEval.cpp
+        ai/evaluation/SmoothnessEval.h
+        ai/evaluation/FreeTilesEval.cpp
+        ai/evaluation/FreeTilesEval.h
+        ai/evaluation/MergeEval.cpp
+        ai/evaluation/MergeEval.h
+        ai/evaluation/TilePlacementEval.cpp
+        ai/evaluation/TilePlacementEval.h
+        ai/evaluation/EnhancedEval.cpp
+        ai/evaluation/EnhancedEval.h
+)
+
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(2048-qt
         MANUAL_FINALIZATION
@@ -49,6 +79,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         ${CORE_SOURCES}
         ${UI_SOURCES}
         ${UTILS_SOURCES}
+        ${AI_SOURCES}
     )
 
 # Define target properties for Android with Qt 6 as:
@@ -62,6 +93,7 @@ else()
             ${CORE_SOURCES}
             ${UI_SOURCES}
             ${UTILS_SOURCES}
+            ${AI_SOURCES}
         )
 
     # Define properties for Android with Qt 5 after find_package() calls as:
@@ -72,11 +104,12 @@ else()
             ${CORE_SOURCES}
             ${UI_SOURCES}
             ${UTILS_SOURCES}
+            ${AI_SOURCES}
         )
     endif()
 endif()
 
-target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Concurrent)
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an

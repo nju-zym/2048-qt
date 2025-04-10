@@ -1,0 +1,431 @@
+#include "ParallelExpectimaxWorker.h"
+#include "evaluation/MonotonicityEval.h"
+#include "evaluation/SmoothnessEval.h"
+#include "evaluation/FreeTilesEval.h"
+#include "evaluation/MergeEval.h"
+#include "evaluation/TilePlacementEval.h"
+#include "evaluation/EnhancedEval.h"
+
+#include <QDebug>
+#include <QElapsedTimer>
+#include <QtConcurrent>
+#include <QFuture>
+#include <QFutureWatcher>
+#include <algorithm>
+#include <random>
+#include <cmath>
+#include <vector>
+#include <functional>
+#include <numeric>
+
+// 使用SIMD指令优化
+#ifdef __SSE4_1__
+#include <immintrin.h>
+#endif
+
+ParallelExpectimaxWorker::ParallelExpectimaxWorker(QObject* parent)
+    : QObject(parent),
+      threadCount(QThread::idealThreadCount()),
+      stopRequested(false),
+      useAlphaBeta(true),
+      useCache(true),
+      useEnhancedEval(true),
+      cacheSize(1000000) {
+    
+    // 设置线程池大小
+    threadPool.setMaxThreadCount(threadCount);
+    
+    // 预留缓存空间
+    cache.reserve(cacheSize);
+    
+    qDebug() << "ParallelExpectimaxWorker created with" << threadCount << "threads";
+}
+
+ParallelExpectimaxWorker::~ParallelExpectimaxWorker() {
+    // 停止所有计算
+    stopCalculation();
+    
+    // 等待线程池中的所有线程完成
+    threadPool.waitForDone();
+    
+    qDebug() << "ParallelExpectimaxWorker destroyed";
+}
+
+void ParallelExpectimaxWorker::calculateBestMove(const BitBoard& board, int depth) {
+    // 重置停止标志
+    stopRequested = false;
+    
+    // 使用QtConcurrent在线程池中运行计算
+    QFuture<int> future = QtConcurrent::run(&threadPool, [this, board, depth]() {
+        return calculateBestMoveInternal(board, depth);
+    });
+    
+    // 使用QFutureWatcher监视计算结果
+    QFutureWatcher<int>* watcher = new QFutureWatcher<int>(this);
+    connect(watcher, &QFutureWatcher<int>::finished, this, [this, watcher]() {
+        if (!stopRequested) {
+            int direction = watcher->result();
+            emit moveCalculated(direction);
+        }
+        watcher->deleteLater();
+    });
+    
+    watcher->setFuture(future);
+}
+
+void ParallelExpectimaxWorker::stopCalculation() {
+    stopRequested = true;
+    threadPool.clear();
+}
+
+void ParallelExpectimaxWorker::setThreadCount(int count) {
+    if (count > 0) {
+        threadCount = count;
+        threadPool.setMaxThreadCount(count);
+    }
+}
+
+void ParallelExpectimaxWorker::setUseAlphaBeta(bool useAlphaBeta) {
+    this->useAlphaBeta = useAlphaBeta;
+}
+
+void ParallelExpectimaxWorker::setUseCache(bool useCache) {
+    this->useCache = useCache;
+}
+
+void ParallelExpectimaxWorker::setCacheSize(size_t size) {
+    cacheSize = size;
+    
+    QMutexLocker locker(&cacheMutex);
+    if (cache.size() > cacheSize) {
+        // 如果当前缓存大小超过新的缓存大小，清除缓存
+        cache.clear();
+        cache.reserve(cacheSize);
+    }
+}
+
+void ParallelExpectimaxWorker::clearCache() {
+    QMutexLocker locker(&cacheMutex);
+    cache.clear();
+}
+
+void ParallelExpectimaxWorker::setUseEnhancedEval(bool useEnhancedEval) {
+    this->useEnhancedEval = useEnhancedEval;
+}
+
+int ParallelExpectimaxWorker::calculateBestMoveInternal(const BitBoard& board, int depth) {
+    QElapsedTimer timer;
+    timer.start();
+    
+    // 可用的移动方向
+    std::vector<int> availableMoves;
+    for (int direction = 0; direction < 4; ++direction) {
+        BitBoard newBoard = board.move(static_cast<BitBoard::Direction>(direction));
+        if (newBoard.board != board.board) {
+            availableMoves.push_back(direction);
+        }
+    }
+    
+    // 如果没有可用的移动，返回任意方向
+    if (availableMoves.empty()) {
+        return 0;  // 上
+    }
+    
+    // 如果只有一个可用的移动，直接返回
+    if (availableMoves.size() == 1) {
+        return availableMoves[0];
+    }
+    
+    // 使用并行计算评估每个移动方向
+    std::vector<std::pair<int, float>> moveScores(availableMoves.size());
+    
+    // 使用并行计算评估每个移动方向
+    std::vector<QFuture<float>> futures;
+    futures.reserve(availableMoves.size());
+    
+    for (size_t i = 0; i < availableMoves.size(); ++i) {
+        int direction = availableMoves[i];
+        moveScores[i].first = direction;
+        
+        // 创建新的棋盘状态
+        BitBoard newBoard = board.move(static_cast<BitBoard::Direction>(direction));
+        
+        // 并行计算每个方向的期望得分
+        futures.push_back(QtConcurrent::run(&threadPool, [this, newBoard, depth]() {
+            return expectimax(newBoard, depth - 1, false);
+        }));
+    }
+    
+    // 等待所有计算完成并收集结果
+    for (size_t i = 0; i < futures.size(); ++i) {
+        moveScores[i].second = futures[i].result();
+    }
+    
+    // 找到得分最高的移动方向
+    auto bestMove = std::max_element(moveScores.begin(), moveScores.end(),
+                                    [](const auto& a, const auto& b) {
+                                        return a.second < b.second;
+                                    });
+    
+    qDebug() << "Best move calculated in" << timer.elapsed() << "ms";
+    
+    return bestMove->first;
+}
+
+float ParallelExpectimaxWorker::expectimax(const BitBoard& board, int depth, bool isMaximizingPlayer, float alpha, float beta) {
+    // 检查是否请求停止
+    if (stopRequested) {
+        return 0.0f;
+    }
+    
+    // 检查缓存
+    if (useCache) {
+        bool found = false;
+        float cachedValue = getFromCache(board, depth, isMaximizingPlayer, found);
+        if (found) {
+            return cachedValue;
+        }
+    }
+    
+    // 如果达到搜索深度或游戏结束，评估棋盘
+    if (depth == 0 || board.isGameOver()) {
+        float value = useEnhancedEval ? enhancedEvaluateBoard(board) : evaluateBoard(board);
+        
+        // 存入缓存
+        if (useCache) {
+            storeInCache(board, depth, isMaximizingPlayer, value);
+        }
+        
+        return value;
+    }
+    
+    // 如果深度足够大，使用并行计算
+    if (depth >= 3 && isMaximizingPlayer) {
+        return parallelExpectimax(board, depth, isMaximizingPlayer, alpha, beta);
+    }
+    
+    float value;
+    
+    if (isMaximizingPlayer) {
+        // 玩家回合，选择最佳移动
+        value = -INFINITY;
+        
+        // 尝试所有可能的移动
+        for (int direction = 0; direction < 4; ++direction) {
+            BitBoard newBoard = board.move(static_cast<BitBoard::Direction>(direction));
+            
+            // 如果移动有效
+            if (newBoard.board != board.board) {
+                float childValue = expectimax(newBoard, depth - 1, false, alpha, beta);
+                value = std::max(value, childValue);
+                
+                // Alpha-Beta剪枝
+                if (useAlphaBeta) {
+                    alpha = std::max(alpha, value);
+                    if (beta <= alpha) {
+                        break;  // Beta剪枝
+                    }
+                }
+            }
+        }
+    } else {
+        // 电脑回合，随机放置2或4
+        value = 0.0f;
+        
+        // 获取所有空位
+        auto emptyPositions = board.getEmptyPositions();
+        
+        // 如果没有空位，返回评估值
+        if (emptyPositions.empty()) {
+            float evalValue = useEnhancedEval ? enhancedEvaluateBoard(board) : evaluateBoard(board);
+            
+            // 存入缓存
+            if (useCache) {
+                storeInCache(board, depth, isMaximizingPlayer, evalValue);
+            }
+            
+            return evalValue;
+        }
+        
+        // 优化：只考虑部分空位
+        const int MAX_EMPTY_POSITIONS = 4;  // 最多考虑4个空位
+        if (emptyPositions.size() > MAX_EMPTY_POSITIONS) {
+            // 随机选择MAX_EMPTY_POSITIONS个空位
+            std::random_device rd;
+            std::mt19937 g(rd());
+            std::shuffle(emptyPositions.begin(), emptyPositions.end(), g);
+            emptyPositions.resize(MAX_EMPTY_POSITIONS);
+        }
+        
+        // 计算每个空位放置2和4的期望值
+        float totalWeight = 0.0f;
+        
+        for (const auto& pos : emptyPositions) {
+            // 放置2（概率0.9）
+            BitBoard newBoard2 = board.placeTile(pos, 2);
+            float value2 = expectimax(newBoard2, depth - 1, true, alpha, beta);
+            
+            // 放置4（概率0.1）
+            BitBoard newBoard4 = board.placeTile(pos, 4);
+            float value4 = expectimax(newBoard4, depth - 1, true, alpha, beta);
+            
+            // 计算加权平均
+            float positionValue = 0.9f * value2 + 0.1f * value4;
+            value += positionValue;
+            totalWeight += 1.0f;
+        }
+        
+        // 计算平均值
+        if (totalWeight > 0) {
+            value /= totalWeight;
+        }
+    }
+    
+    // 存入缓存
+    if (useCache) {
+        storeInCache(board, depth, isMaximizingPlayer, value);
+    }
+    
+    return value;
+}
+
+float ParallelExpectimaxWorker::parallelExpectimax(const BitBoard& board, int depth, bool isMaximizingPlayer, float alpha, float beta) {
+    if (isMaximizingPlayer) {
+        // 玩家回合，选择最佳移动
+        float value = -INFINITY;
+        
+        // 收集有效移动
+        std::vector<std::pair<int, BitBoard>> validMoves;
+        for (int direction = 0; direction < 4; ++direction) {
+            BitBoard newBoard = board.move(static_cast<BitBoard::Direction>(direction));
+            if (newBoard.board != board.board) {
+                validMoves.emplace_back(direction, newBoard);
+            }
+        }
+        
+        // 如果没有有效移动，返回评估值
+        if (validMoves.empty()) {
+            return useEnhancedEval ? enhancedEvaluateBoard(board) : evaluateBoard(board);
+        }
+        
+        // 并行计算每个移动的期望值
+        std::vector<QFuture<float>> futures;
+        futures.reserve(validMoves.size());
+        
+        for (const auto& [direction, newBoard] : validMoves) {
+            futures.push_back(QtConcurrent::run(&threadPool, [this, newBoard, depth]() {
+                return expectimax(newBoard, depth - 1, false);
+            }));
+        }
+        
+        // 等待所有计算完成并找到最大值
+        for (auto& future : futures) {
+            float childValue = future.result();
+            value = std::max(value, childValue);
+            
+            // Alpha-Beta剪枝
+            if (useAlphaBeta) {
+                alpha = std::max(alpha, value);
+                if (beta <= alpha) {
+                    break;  // Beta剪枝
+                }
+            }
+        }
+        
+        return value;
+    } else {
+        // 电脑回合，随机放置2或4
+        // 这部分不并行化，因为并行化开销可能超过收益
+        return expectimax(board, depth, isMaximizingPlayer, alpha, beta);
+    }
+}
+
+float ParallelExpectimaxWorker::evaluateBoard(const BitBoard& board) {
+    // 基本评估函数
+    float score = 0.0f;
+    
+    // 空位数量
+    int emptyTiles = board.countEmptyTiles();
+    score += EMPTY_TILE_WEIGHT * emptyTiles;
+    
+    // 单调性（相邻方块值的递增或递减程度）
+    float monotonicity = MonotonicityEval::evaluate(board);
+    score += MONOTONICITY_WEIGHT * monotonicity;
+    
+    // 平滑度（相邻方块值的相似程度）
+    float smoothness = SmoothnessEval::evaluate(board);
+    score += SMOOTHNESS_WEIGHT * smoothness;
+    
+    // 合并可能性
+    float mergeScore = MergeEval::evaluate(board);
+    score += MERGE_WEIGHT * mergeScore;
+    
+    return score;
+}
+
+float ParallelExpectimaxWorker::enhancedEvaluateBoard(const BitBoard& board) {
+    // 增强版评估函数
+    float score = evaluateBoard(board);
+    
+    // 角落最大值评估
+    float cornerMaxScore = EnhancedEval::evaluateCornerMax(board);
+    score += CORNER_MAX_WEIGHT * cornerMaxScore;
+    
+    // 蛇形模式评估
+    float snakePatternScore = EnhancedEval::evaluateSnakePattern(board);
+    score += SNAKE_PATTERN_WEIGHT * snakePatternScore;
+    
+    return score;
+}
+
+float ParallelExpectimaxWorker::getFromCache(const BitBoard& board, int depth, bool isMaximizingPlayer, bool& found) {
+    QMutexLocker locker(&cacheMutex);
+    
+    CacheKey key{board.board, depth, isMaximizingPlayer};
+    auto it = cache.find(key);
+    
+    if (it != cache.end()) {
+        found = true;
+        return it->second;
+    }
+    
+    found = false;
+    return 0.0f;
+}
+
+void ParallelExpectimaxWorker::storeInCache(const BitBoard& board, int depth, bool isMaximizingPlayer, float value) {
+    QMutexLocker locker(&cacheMutex);
+    
+    // 如果缓存已满，清除一半的缓存
+    if (cache.size() >= cacheSize) {
+        // 创建一个临时缓存，保留最近一半的条目
+        std::unordered_map<CacheKey, float, CacheKeyHash> newCache;
+        newCache.reserve(cacheSize / 2);
+        
+        // 只保留深度较大的缓存项，因为它们计算成本更高
+        std::vector<std::pair<CacheKey, float>> cacheItems;
+        cacheItems.reserve(cache.size());
+        
+        for (const auto& item : cache) {
+            cacheItems.emplace_back(item);
+        }
+        
+        // 按深度排序
+        std::sort(cacheItems.begin(), cacheItems.end(), 
+                 [](const auto& a, const auto& b) {
+                     return a.first.depth > b.first.depth;
+                 });
+        
+        // 保留前一半
+        for (size_t i = 0; i < cacheItems.size() / 2; ++i) {
+            newCache.insert(cacheItems[i]);
+        }
+        
+        // 替换原缓存
+        cache = std::move(newCache);
+    }
+    
+    // 存储新值
+    CacheKey key{board.board, depth, isMaximizingPlayer};
+    cache[key] = value;
+}

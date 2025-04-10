@@ -1,0 +1,138 @@
+#ifndef BITBOARD_H
+#define BITBOARD_H
+
+#include <cstdint>
+#include <vector>
+#include <array>
+#include <string>
+#include "../core/GameBoard.h"
+
+/**
+ * @brief 位棋盘表示类，使用64位整数表示4x4的2048游戏棋盘
+ * 
+ * 每个方块使用4位表示，整个棋盘使用64位整数表示
+ * 这种表示方法可以在单个机器寄存器中传递整个棋盘，提高计算效率
+ */
+class BitBoard {
+public:
+    // 移动方向枚举
+    enum Direction { UP = 0, RIGHT = 1, DOWN = 2, LEFT = 3 };
+
+    // 位置结构体
+    struct Position {
+        int row;
+        int col;
+        
+        Position(int r, int c) : row(r), col(c) {}
+        bool operator==(const Position& other) const {
+            return row == other.row && col == other.col;
+        }
+    };
+
+    /**
+     * @brief 默认构造函数，创建空棋盘
+     */
+    BitBoard();
+
+    /**
+     * @brief 从GameBoard构造BitBoard
+     * @param board GameBoard对象
+     */
+    explicit BitBoard(const GameBoard& board);
+
+    /**
+     * @brief 从64位整数构造BitBoard
+     * @param board 64位整数表示的棋盘
+     */
+    explicit BitBoard(uint64_t board);
+
+    /**
+     * @brief 获取指定位置的方块值
+     * @param row 行索引（0-3）
+     * @param col 列索引（0-3）
+     * @return 方块值（2的幂次）
+     */
+    int get(int row, int col) const;
+
+    /**
+     * @brief 设置指定位置的方块值
+     * @param row 行索引（0-3）
+     * @param col 列索引（0-3）
+     * @param value 方块值（2的幂次）
+     */
+    void set(int row, int col, int value);
+
+    /**
+     * @brief 获取棋盘的64位整数表示
+     * @return 64位整数表示的棋盘
+     */
+    uint64_t getBoard() const;
+
+    /**
+     * @brief 移动棋盘
+     * @param direction 移动方向
+     * @return 移动后的新棋盘
+     */
+    BitBoard move(Direction direction) const;
+
+    /**
+     * @brief 判断游戏是否结束
+     * @return 如果游戏结束返回true，否则返回false
+     */
+    bool isGameOver() const;
+
+    /**
+     * @brief 获取空位置列表
+     * @return 空位置的向量
+     */
+    std::vector<Position> getEmptyPositions() const;
+
+    /**
+     * @brief 在指定位置放置新方块
+     * @param pos 位置
+     * @param value 方块值（2或4）
+     * @return 放置新方块后的棋盘
+     */
+    BitBoard placeNewTile(const Position& pos, int value) const;
+
+    /**
+     * @brief 转换为字符串表示
+     * @return 棋盘的字符串表示
+     */
+    std::string toString() const;
+
+    /**
+     * @brief 相等运算符
+     * @param other 另一个BitBoard对象
+     * @return 如果两个棋盘相等返回true，否则返回false
+     */
+    bool operator==(const BitBoard& other) const;
+
+    /**
+     * @brief 不等运算符
+     * @param other 另一个BitBoard对象
+     * @return 如果两个棋盘不相等返回true，否则返回false
+     */
+    bool operator!=(const BitBoard& other) const;
+    
+    /**
+     * @brief 计算棋盘的哈希值
+     * @return 棋盘的哈希值
+     */
+    uint64_t hash() const;
+
+private:
+    uint64_t board; // 64位整数表示的棋盘
+
+    // 辅助函数
+    static uint64_t moveUp(uint64_t board);
+    static uint64_t moveRight(uint64_t board);
+    static uint64_t moveDown(uint64_t board);
+    static uint64_t moveLeft(uint64_t board);
+    
+    // 行操作辅助函数
+    static uint16_t moveRowLeft(uint16_t row);
+    static uint16_t moveRowRight(uint16_t row);
+};
+
+#endif // BITBOARD_H
