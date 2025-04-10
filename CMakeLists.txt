@@ -19,25 +19,47 @@ set(PROJECT_SOURCES
         mainwindow.ui
 )
 
+set(CORE_SOURCES
+        core/GameBoard.cpp
+        core/GameBoard.h
+        core/GameState.cpp
+        core/GameState.h
+)
+
+set(UTILS_SOURCES
+        utils/StyleManager.cpp
+        utils/StyleManager.h
+        utils/AnimationManager.cpp
+        utils/AnimationManager.h
+)
+
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(2048-qt
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
+        ${CORE_SOURCES}
+        ${UTILS_SOURCES}
     )
+
 # Define target properties for Android with Qt 6 as:
-#    set_property(TARGET 2048-qt APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
-#                 ${CMAKE_CURRENT_SOURCE_DIR}/android)
+# set_property(TARGET 2048-qt APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
+# ${CMAKE_CURRENT_SOURCE_DIR}/android)
 # For more information, see https://doc.qt.io/qt-6/qt-add-executable.html#target-creation
 else()
     if(ANDROID)
         add_library(2048-qt SHARED
             ${PROJECT_SOURCES}
+            ${CORE_SOURCES}
+            ${UTILS_SOURCES}
         )
-# Define properties for Android with Qt 5 after find_package() calls as:
-#    set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
+
+    # Define properties for Android with Qt 5 after find_package() calls as:
+    # set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
     else()
         add_executable(2048-qt
             ${PROJECT_SOURCES}
+            ${CORE_SOURCES}
+            ${UTILS_SOURCES}
         )
     endif()
 endif()
@@ -48,8 +70,9 @@ target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 # If you are developing for iOS or macOS you should consider setting an
 # explicit, fixed bundle identifier manually though.
 if(${QT_VERSION} VERSION_LESS 6.1.0)
-  set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.2048-qt)
+    set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.2048-qt)
 endif()
+
 set_target_properties(2048-qt PROPERTIES
     ${BUNDLE_ID_OPTION}
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
