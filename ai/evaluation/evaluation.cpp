@@ -1,5 +1,6 @@
 #include "evaluation.h"
 
+#include "edge.h"
 #include "monotonicity.h"
 #include "smoothness.h"
 #include "snake.h"
@@ -25,7 +26,8 @@ float evaluateBoard(BitBoard board,
                     float cornerWeight,
                     float snakeWeight,
                     float mergeWeight,
-                    float tileWeight) {
+                    float tileWeight,
+                    float edgeWeight) {
     // 计算空位分数
     float emptyScore = emptyWeight * calculateEmptyTilesScore(board);
 
@@ -47,8 +49,11 @@ float evaluateBoard(BitBoard board,
     // 计算方块权重分数
     float tileScore = tileWeight * calculateTileValuesScore(board);
 
+    // 计算边缘策略分数
+    float edgeScore = edgeWeight * Edge::calculateEdgeScore(board);
+
     // 返回综合评分
-    return emptyScore + monoScore + smoothScore + cornerScore + snakeScore + mergeScore + tileScore;
+    return emptyScore + monoScore + smoothScore + cornerScore + snakeScore + mergeScore + tileScore + edgeScore;
 }
 
 float calculateEmptyTilesScore(BitBoard board) {

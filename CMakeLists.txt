@@ -47,6 +47,8 @@ set(AI_SOURCES
     ai/evaluation/tile.cpp
     ai/evaluation/merge.h
     ai/evaluation/merge.cpp
+    ai/evaluation/edge.h
+    ai/evaluation/edge.cpp
 )
 
 set(UTILS_SOURCES

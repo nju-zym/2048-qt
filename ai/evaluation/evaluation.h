@@ -18,6 +18,7 @@ namespace Evaluation {
  * @param snakeWeight 蛇形路径权重
  * @param mergeWeight 合并机会权重
  * @param tileWeight 方块值权重
+ * @param edgeWeight 边缘策略权重
  * @return 评估得分
  */
 float evaluateBoard(BitBoard board,
@@ -27,7 +28,8 @@ float evaluateBoard(BitBoard board,
                     float cornerWeight = 2.0f,
                     float snakeWeight  = 4.0f,
                     float mergeWeight  = 1.0f,
-                    float tileWeight   = 1.5f);
+                    float tileWeight   = 1.5f,
+                    float edgeWeight   = 2.5f);
 
 /**
  * @brief 计算棋盘上的空位得分

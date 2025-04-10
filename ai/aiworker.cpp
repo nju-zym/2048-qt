@@ -288,12 +288,13 @@ float AIWorker::evaluateBoard(BitBoard board) {
 
     // 根据游戏阶段动态调整权重
     float emptyWeight  = 10.0f;  // 显著增加空位的重要性
-    float monoWeight   = 2.0f;   // 增加单调性的重要性
+    float monoWeight   = 4.0f;   // 显著增加单调性的重要性
     float smoothWeight = 0.1f;   // 减少平滑性的重要性
-    float cornerWeight = 30.0f;  // 显著增加角落策略的重要性
-    float snakeWeight  = 20.0f;  // 显著增加蛇形策略的重要性
+    float cornerWeight = 50.0f;  // 显著增加角落策略的重要性
+    float snakeWeight  = 30.0f;  // 显著增加蛇形策略的重要性
     float mergeWeight  = 1.0f;   // 标准合并权重
     float tileWeight   = 4.0f;   // 增加瓦片值的重要性
+    float edgeWeight   = 25.0f;  // 边缘策略权重
 
     // 早期阶段（最大瓦片 < 8，即256）
     if (maxTile < 8) {
@@ -304,6 +305,7 @@ float AIWorker::evaluateBoard(BitBoard board) {
         snakeWeight  = 10.0f;  // 增加蛇形策略的重要性
         mergeWeight  = 2.0f;   // 增加合并的重要性
         tileWeight   = 2.0f;   // 增加瓦片值的重要性
+        edgeWeight   = 15.0f;  // 边缘策略权重
     }
     // 中期阶段（最大瓦片 8-10，即256-1024）
     else if (maxTile < 11) {
@@ -314,28 +316,30 @@ float AIWorker::evaluateBoard(BitBoard board) {
         snakeWeight  = 15.0f;  // 增加蛇形策略的重要性
         mergeWeight  = 1.5f;   // 标准合并权重
         tileWeight   = 3.0f;   // 增加瓦片值的重要性
+        edgeWeight   = 20.0f;  // 边缘策略权重
     }
     // 后期阶段（最大瓦片 >= 11，即>=2048）
     else {
         emptyWeight  = 12.0f;  // 显著增加空位的重要性
-        monoWeight   = 3.0f;   // 显著增加单调性的重要性
+        monoWeight   = 6.0f;   // 显著增加单调性的重要性
         smoothWeight = 0.05f;  // 减少平滑性的重要性
-        cornerWeight = 35.0f;  // 显著增加角落策略的重要性
-        snakeWeight  = 25.0f;  // 显著增加蛇形策略的重要性
+        cornerWeight = 60.0f;  // 显著增加角落策略的重要性
+        snakeWeight  = 40.0f;  // 显著增加蛇形策略的重要性
         mergeWeight  = 1.0f;   // 减少合并的重要性
         tileWeight   = 5.0f;   // 增加瓦片值的重要性
+        edgeWeight   = 30.0f;  // 边缘策略权重
     }
 
     // 如果空位很少，显著增加空位的权重
     if (emptyCount <= 3) {
-        emptyWeight *= 2.0f;
+        emptyWeight *= 2.5f;
     } else if (emptyCount <= 5) {
-        emptyWeight *= 1.5f;
+        emptyWeight *= 1.8f;
     }
 
     // 使用调整后的权重进行评估
     return Evaluation::evaluateBoard(
-        board, emptyWeight, monoWeight, smoothWeight, cornerWeight, snakeWeight, mergeWeight, tileWeight);
+        board, emptyWeight, monoWeight, smoothWeight, cornerWeight, snakeWeight, mergeWeight, tileWeight, edgeWeight);
 }
 
 // Helper function to check if a move is valid
