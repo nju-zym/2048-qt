@@ -1,0 +1,89 @@
+#ifndef BITBOARD_INITIALIZER_H
+#define BITBOARD_INITIALIZER_H
+
+#include <QObject>
+#include <QThread>
+#include <QVector>
+
+/**
+ * @brief BitBoard初始化工作线程类
+ */
+class BitBoardInitWorker : public QObject {
+    Q_OBJECT
+    
+public:
+    explicit BitBoardInitWorker(QObject* parent = nullptr);
+    ~BitBoardInitWorker();
+    
+public slots:
+    /**
+     * @brief 执行初始化
+     */
+    void doInitialization();
+    
+signals:
+    /**
+     * @brief 初始化完成信号
+     */
+    void initializationCompleted();
+    
+private:
+    /**
+     * @brief 尝试从预编译的表初始化
+     * @return 是否成功
+     */
+    bool initializeFromPrecompiled();
+    
+    /**
+     * @brief 尝试从内存映射文件初始化
+     * @return 是否成功
+     */
+    bool initializeFromMappedFile();
+    
+    /**
+     * @brief 尝试使用OpenMP并行计算初始化
+     * @return 是否成功
+     */
+    bool initializeWithOpenMP();
+    
+    /**
+     * @brief 尝试使用QtConcurrent并行计算初始化
+     * @return 是否成功
+     */
+    bool initializeWithQtConcurrent();
+};
+
+/**
+ * @brief BitBoard初始化器类
+ * 
+ * 在后台线程中初始化BitBoard的查找表
+ */
+class BitBoardInitializer : public QObject {
+    Q_OBJECT
+    
+public:
+    explicit BitBoardInitializer(QObject* parent = nullptr);
+    ~BitBoardInitializer();
+    
+    /**
+     * @brief 开始初始化
+     */
+    void initialize();
+    
+signals:
+    /**
+     * @brief 初始化完成信号
+     */
+    void initializationCompleted();
+    
+private slots:
+    /**
+     * @brief 处理初始化完成
+     */
+    void onInitializationCompleted();
+    
+private:
+    QVector<QThread*> workerThreads;
+};
+
+#endif // BITBOARD_INITIALIZER_H

@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(BitBoardTableGenerator VERSION 0.1 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 查找Qt
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
+
+# 添加可执行文件
+add_executable(generate_tables_cli 
+    generate_tables_cli.cpp
+    ../ai/BitBoardInitializer.cpp
+    ../ai/BitBoardInitializer.h
+    ../ai/BitBoard.cpp
+    ../ai/BitBoard.h
+    ../ai/GenerateTables.cpp
+)
+
+# 链接Qt库
+target_link_libraries(generate_tables_cli PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+
+# 包含目录
+target_include_directories(generate_tables_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../)

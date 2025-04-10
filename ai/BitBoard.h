@@ -146,6 +146,28 @@ class BitBoard {
      */
     static bool areTablesInitialized();
 
+    /**
+     * @brief 计算哈希值，用于缓存
+     * @return 哈希值
+     */
+    size_t hash() const;
+
+    /**
+     * @brief 计算一行的移动结果
+     * @param row 16位整数表示的行
+     * @param direction 移动方向
+     * @return 移动后的行
+     */
+    static uint16_t moveRow(uint16_t row, Direction direction);
+
+    /**
+     * @brief 计算移动产生的分数
+     * @param before 移动前的行
+     * @param after 移动后的行
+     * @return 移动产生的分数
+     */
+    static uint16_t calculateScore(uint16_t before, uint16_t after);
+
    private:
     uint64_t board;  // 64位整数表示的棋盘
 
@@ -157,10 +179,6 @@ class BitBoard {
     static void initializeTables();
     static bool tablesInitialized;
     static QMutex tablesMutex;
-
-    // 辅助函数
-    static uint16_t moveRow(uint16_t row, Direction direction);
-    static uint16_t calculateScore(uint16_t before, uint16_t after);
 };
 
 #endif  // BITBOARD_H

@@ -164,6 +164,7 @@ class ParallelExpectimaxWorker : public QObject {
         }
     };
 
+    // 缓存相关变量
     std::unordered_map<CacheKey, float, CacheKeyHash> cache;
     QMutex cacheMutex;
 
@@ -174,11 +175,14 @@ class ParallelExpectimaxWorker : public QObject {
     QFutureWatcher<DirectionScore> leftWatcher;
 
     // 评估函数权重
-    static constexpr float MONOTONICITY_WEIGHT   = 1.0F;
-    static constexpr float SMOOTHNESS_WEIGHT     = 0.1F;
-    static constexpr float FREE_TILES_WEIGHT     = 2.7F;
-    static constexpr float MERGE_WEIGHT          = 1.0F;
-    static constexpr float TILE_PLACEMENT_WEIGHT = 1.0F;
+    static constexpr float MONOTONICITY_WEIGHT             = 1.0F;
+    static constexpr float SMOOTHNESS_WEIGHT               = 0.1F;
+    static constexpr float FREE_TILES_WEIGHT               = 2.7F;
+    static constexpr float MERGE_WEIGHT                    = 1.0F;
+    static constexpr float TILE_PLACEMENT_WEIGHT           = 1.0F;
+    static constexpr float CORNER_STRATEGY_WEIGHT          = 2.0F;
+    static constexpr float LARGE_NUMBERS_CONNECTION_WEIGHT = 1.5F;
+    static constexpr float RISK_WEIGHT                     = 1.2F;
 
     /**
      * @brief 线程主函数
@@ -204,11 +208,22 @@ class ParallelExpectimaxWorker : public QObject {
     float expectimax(BitBoard const& board, int depth, bool maximizingPlayer);
 
     /**
+     * @brief 带Alpha-Beta剪枝的Expectimax算法核心函数
+     * @param board 当前棋盘状态
+     * @param depth 当前搜索深度
+     * @param maximizingPlayer 是否是最大化玩家的回合
+     * @param alpha Alpha值
+     * @param beta Beta值
+     * @return 期望得分
+     */
+    float expectimax(BitBoard const& board, int depth, bool maximizingPlayer, float alpha, float beta);
+
+    /**
      * @brief 评估棋盘状态
      * @param board 棋盘状态
      * @return 评估分数
      */
-    float evaluateBoard(BitBoard const& board);
+    float evaluateBoard(BitBoard const& board) const;
 };
 
 #endif  // PARALLEL_EXPECTIMAX_WORKER_H

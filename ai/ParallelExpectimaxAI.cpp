@@ -12,6 +12,9 @@ ParallelExpectimaxAI::ParallelExpectimaxAI(int depth, int threadCount, QObject* 
       threadCount(threadCount <= 0 ? QThread::idealThreadCount() * 2 : threadCount),
       lastCalculatedMove(-1),
       moveReady(false),
+      useDynamicDepth(false),
+      minDepth(2),
+      maxDepth(5),
       worker(nullptr) {
     // 创建工作线程
     worker = new ParallelExpectimaxWorker();
@@ -42,17 +45,61 @@ int ParallelExpectimaxAI::getBestMove(GameBoard const& board) {
     // 创建BitBoard
     BitBoard bitBoard(board);
 
-    // 启动工作线程计算
-    worker->calculateBestMove(bitBoard, depth);
+    // 检查是否有有效移动
+    bool anyValidMove = false;
+    for (int dir = 0; dir < 4; dir++) {
+        BitBoard tempBoard = bitBoard;
+        if (tempBoard.move(static_cast<BitBoard::Direction>(dir)) != bitBoard) {
+            anyValidMove = true;
+            break;
+        }
+    }
 
-    // 返回上一次计算的移动，或者随机选择一个方向
+    // 如果没有有效移动，返回任意方向
+    if (!anyValidMove) {
+        return 0;  // 上
+    }
+
+    // 如果使用动态深度调整，计算动态深度
+    int searchDepth = useDynamicDepth ? calculateDynamicDepth(board) : depth;
+
+    // 启动工作线程计算
+    worker->calculateBestMove(bitBoard, searchDepth);
+
+    // 返回上一次计算的移动，或者选择一个最佳方向
     QMutexLocker locker(&mutex);
     if (moveReady) {
         int move = lastCalculatedMove;
         return move;
     } else {
-        // 如果还没有计算结果，随机选择一个方向
-        return QRandomGenerator::global()->bounded(4);
+        // 如果还没有计算结果，进行简单的启发式计算
+        // 计算每个方向的空格数量
+        int bestDir       = -1;
+        int maxEmptyTiles = -1;
+
+        for (int dir = 0; dir < 4; dir++) {
+            BitBoard tempBoard = bitBoard;
+            BitBoard newBoard  = tempBoard.move(static_cast<BitBoard::Direction>(dir));
+
+            if (newBoard != bitBoard) {
+                // 计算移动后的空格数量
+                int emptyTiles = newBoard.countEmptyTiles();
+
+                // 更新最佳方向
+                if (emptyTiles > maxEmptyTiles) {
+                    maxEmptyTiles = emptyTiles;
+                    bestDir       = dir;
+                }
+            }
+        }
+
+        // 如果找到有效方向，返回最佳方向
+        if (bestDir != -1) {
+            return bestDir;
+        }
+
+        // 如果没有有效方向，返回任意方向
+        return 0;  // 上
     }
 }
 
@@ -137,4 +184,80 @@ void ParallelExpectimaxAI::setUseEnhancedEval(bool useEnhancedEval) {
 
 bool ParallelExpectimaxAI::getUseEnhancedEval() const {
     return worker ? worker->getUseEnhancedEval() : false;
+}
+
+void ParallelExpectimaxAI::setUseDynamicDepth(bool useDynamicDepth) {
+    this->useDynamicDepth = useDynamicDepth;
+}
+
+bool ParallelExpectimaxAI::getUseDynamicDepth() const {
+    return useDynamicDepth;
+}
+
+void ParallelExpectimaxAI::setMinDepth(int minDepth) {
+    if (minDepth > 0 && minDepth <= maxDepth) {
+        this->minDepth = minDepth;
+    }
+}
+
+int ParallelExpectimaxAI::getMinDepth() const {
+    return minDepth;
+}
+
+void ParallelExpectimaxAI::setMaxDepth(int maxDepth) {
+    if (maxDepth >= minDepth) {
+        this->maxDepth = maxDepth;
+    }
+}
+
+int ParallelExpectimaxAI::getMaxDepth() const {
+    return maxDepth;
+}
+
+int ParallelExpectimaxAI::calculateDynamicDepth(GameBoard const& board) const {
+    // 获取棋盘上的空格数量
+    int emptyTiles = 0;
+    for (int row = 0; row < board.getSize(); ++row) {
+        for (int col = 0; col < board.getSize(); ++col) {
+            if (board.isTileEmpty(row, col)) {
+                emptyTiles++;
+            }
+        }
+    }
+
+    // 获取棋盘上的最大数字
+    int maxTile = 0;
+    for (int row = 0; row < board.getSize(); ++row) {
+        for (int col = 0; col < board.getSize(); ++col) {
+            if (!board.isTileEmpty(row, col)) {
+                maxTile = std::max(maxTile, board.getTileValue(row, col));
+            }
+        }
+    }
+
+    // 根据空格数量和最大数字动态调整搜索深度
+    int dynamicDepth = minDepth;  // 默认使用最小深度
+
+    // 当空格数量少时，使用更深的搜索
+    if (emptyTiles <= 4) {
+        dynamicDepth = maxDepth;
+    } else if (emptyTiles <= 8) {
+        dynamicDepth = (minDepth + maxDepth) / 2 + 1;
+    } else {
+        dynamicDepth = minDepth;
+    }
+
+    // 当最大数字较大时，使用更深的搜索
+    if (maxTile >= 2048) {
+        dynamicDepth = std::max(dynamicDepth, maxDepth - 1);
+    } else if (maxTile >= 1024) {
+        dynamicDepth = std::max(dynamicDepth, (minDepth + maxDepth) / 2);
+    }
+
+    // 确保深度在有效范围内
+    dynamicDepth = std::max(minDepth, std::min(dynamicDepth, maxDepth));
+
+    qDebug() << "Dynamic depth:" << dynamicDepth << "(empty tiles:" << emptyTiles << ", max tile:" << maxTile << ")";
+
+    return dynamicDepth;
 }

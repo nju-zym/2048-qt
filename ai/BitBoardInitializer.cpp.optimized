@@ -1,0 +1,137 @@
+#include "BitBoardInitializer.h"
+#include "BitBoard.h"
+#include <QDebug>
+#include <QElapsedTimer>
+#include <QThreadPool>
+#include <QtConcurrent>
+
+BitBoardInitializer::BitBoardInitializer(QObject* parent) : QObject(parent) {
+    // 不再在构造函数中移动到工作线程
+    // 而是在initialize方法中创建新的线程
+}
+
+BitBoardInitializer::~BitBoardInitializer() {
+    // 等待所有线程完成
+    for (QThread* thread : workerThreads) {
+        if (thread && thread->isRunning()) {
+            thread->quit();
+            thread->wait();
+            delete thread;
+        }
+    }
+    workerThreads.clear();
+}
+
+void BitBoardInitializer::initialize() {
+    // 如果表已经初始化，直接发出完成信号
+    if (BitBoard::areTablesInitialized()) {
+        emit initializationCompleted();
+        return;
+    }
+    
+    // 创建一个新的工作线程
+    QThread* workerThread = new QThread();
+    workerThreads.append(workerThread);
+    
+    // 创建一个工作对象
+    BitBoardInitWorker* worker = new BitBoardInitWorker();
+    worker->moveToThread(workerThread);
+    
+    // 连接信号和槽
+    connect(workerThread, &QThread::started, worker, &BitBoardInitWorker::doInitialization);
+    connect(worker, &BitBoardInitWorker::initializationCompleted, this, &BitBoardInitializer::onInitializationCompleted);
+    connect(worker, &BitBoardInitWorker::initializationCompleted, worker, &BitBoardInitWorker::deleteLater);
+    connect(worker, &BitBoardInitWorker::initializationCompleted, workerThread, &QThread::quit);
+    connect(workerThread, &QThread::finished, workerThread, &QThread::deleteLater);
+    
+    // 启动工作线程
+    workerThread->start();
+}
+
+void BitBoardInitializer::onInitializationCompleted() {
+    // 清理已完成的线程
+    for (int i = workerThreads.size() - 1; i >= 0; --i) {
+        if (!workerThreads[i]->isRunning()) {
+            workerThreads.removeAt(i);
+        }
+    }
+    
+    // 发出完成信号
+    emit initializationCompleted();
+}
+
+// BitBoardInitWorker 实现
+
+BitBoardInitWorker::BitBoardInitWorker(QObject* parent) : QObject(parent) {
+}
+
+BitBoardInitWorker::~BitBoardInitWorker() {
+}
+
+void BitBoardInitWorker::doInitialization() {
+    QElapsedTimer timer;
+    timer.start();
+    
+    qDebug() << "开始初始化BitBoard表...";
+    
+    // 使用线程池并行计算
+    QThreadPool threadPool;
+    int maxThreads = QThread::idealThreadCount() * 2; // 使用更多线程
+    threadPool.setMaxThreadCount(maxThreads);
+    
+    qDebug() << "使用" << maxThreads << "个线程进行初始化";
+    
+    // 将65536个可能的行状态分成多个批次
+    const int batchSize = 1024; // 更小的批次大小，提高并行度
+    const int numBatches = 65536 / batchSize;
+    
+    // 创建临时表
+    std::array<uint16_t, 65536> tempMoveTableLeft;
+    std::array<uint16_t, 65536> tempMoveTableRight;
+    std::array<uint16_t, 65536> tempScoreTable;
+    
+    // 使用QtConcurrent::map并行处理每个批次
+    QVector<int> batchIndices;
+    for (int i = 0; i < numBatches; ++i) {
+        batchIndices.append(i);
+    }
+    
+    // 使用高优先级
+    threadPool.setExpiryTimeout(-1); // 线程永不过期
+    
+    // 并行处理所有批次
+    QtConcurrent::blockingMap(batchIndices, [&](int batch) {
+        int startRow = batch * batchSize;
+        int endRow = (batch + 1) * batchSize;
+        
+        // 处理一个批次的行
+        for (uint16_t row = startRow; row < endRow; ++row) {
+            // 计算向左移动的结果
+            uint16_t leftResult = BitBoard::moveRow(row, BitBoard::LEFT);
+            tempMoveTableLeft[row] = leftResult;
+            tempScoreTable[row] = BitBoard::calculateScore(row, leftResult);
+            
+            // 计算向右移动的结果
+            uint16_t rightResult = BitBoard::moveRow(row, BitBoard::RIGHT);
+            tempMoveTableRight[row] = rightResult;
+        }
+    });
+    
+    // 获取BitBoard的静态表的引用
+    std::array<uint16_t, 65536>& moveTableLeft = BitBoard::moveTable[BitBoard::LEFT];
+    std::array<uint16_t, 65536>& moveTableRight = BitBoard::moveTable[BitBoard::RIGHT];
+    std::array<uint16_t, 65536>& scoreTable = BitBoard::scoreTable;
+    
+    // 使用memcpy快速复制数据
+    memcpy(moveTableLeft.data(), tempMoveTableLeft.data(), sizeof(uint16_t) * 65536);
+    memcpy(moveTableRight.data(), tempMoveTableRight.data(), sizeof(uint16_t) * 65536);
+    memcpy(scoreTable.data(), tempScoreTable.data(), sizeof(uint16_t) * 65536);
+    
+    // 设置初始化完成标志
+    BitBoard::tablesInitialized = true;
+    
+    qDebug() << "BitBoard表初始化完成，耗时" << timer.elapsed() << "毫秒";
+    
+    // 发出完成信号
+    emit initializationCompleted();
+}

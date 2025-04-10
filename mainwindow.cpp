@@ -6,6 +6,7 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QThread>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWindow) {
     ui->setupUi(this);
@@ -19,20 +20,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
     gameController = new GameController(this);
     gameController->setGameView(gameView);
 
-    // 创建BitBoardInitializer
-    bitBoardInitializer = new BitBoardInitializer(this);
-    connect(bitBoardInitializer,
-            &BitBoardInitializer::initializationCompleted,
-            this,
-            &MainWindow::onBitBoardInitializationCompleted);
-
-    // 创建进度对话框
-    progressDialog = new QProgressDialog("Initializing AI...", "Cancel", 0, 0, this);
-    progressDialog->setWindowModality(Qt::WindowModal);
-    progressDialog->setMinimumDuration(0);
-    progressDialog->setCancelButton(nullptr);
-    progressDialog->setAutoClose(true);
-    progressDialog->setAutoReset(true);
+    // 初始化成员变量
+    bitBoardInitializer = nullptr;
+    progressDialog      = nullptr;
 
     // 开始新游戏
     gameController->startNewGame();
@@ -76,15 +66,14 @@ void MainWindow::on_settingsButton_clicked() {
 
 void MainWindow::onBitBoardInitializationCompleted() {
     // 隐藏进度对话框
-    progressDialog->hide();
+    if (progressDialog) {
+        progressDialog->hide();
+    }
 
     // 启用AI按钮
     QPushButton* aiButton = findChild<QPushButton*>("aiButton");
     if (aiButton) {
         aiButton->setEnabled(true);
-
-        // 自动点击AI按钮，继续之前的操作
-        on_aiButton_clicked();
     }
 }
 
@@ -103,6 +92,25 @@ void MainWindow::on_aiButton_clicked() {
     } else {
         // 检查BitBoard表是否已初始化
         if (!BitBoard::areTablesInitialized()) {
+            // 初始化BitBoardInitializer
+            if (!bitBoardInitializer) {
+                bitBoardInitializer = BitBoardInitializer::getInstance(this);
+                connect(bitBoardInitializer,
+                        &BitBoardInitializer::initializationCompleted,
+                        this,
+                        &MainWindow::onBitBoardInitializationCompleted);
+            }
+
+            // 创建进度对话框
+            if (!progressDialog) {
+                progressDialog = new QProgressDialog("Initializing AI...", "Cancel", 0, 0, this);
+                progressDialog->setWindowModality(Qt::WindowModal);
+                progressDialog->setMinimumDuration(0);
+                progressDialog->setCancelButton(nullptr);
+                progressDialog->setAutoClose(true);
+                progressDialog->setAutoReset(true);
+            }
+
             // 显示进度对话框
             progressDialog->show();
 
@@ -135,6 +143,11 @@ void MainWindow::on_aiButton_clicked() {
                 parallelAI->setUseCache(dialog.getUseCache());
                 parallelAI->setCacheSize(dialog.getCacheSize());
                 parallelAI->setUseEnhancedEval(dialog.getUseEnhancedEval());
+
+                // 设置动态深度调整
+                parallelAI->setUseDynamicDepth(dialog.getUseDynamicDepth());
+                parallelAI->setMinDepth(dialog.getMinDepth());
+                parallelAI->setMaxDepth(dialog.getMaxDepth());
 
                 ai = parallelAI;
             }

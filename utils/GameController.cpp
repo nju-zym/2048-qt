@@ -272,8 +272,8 @@ void GameController::startAI(AIInterface* aiInstance) {
 
     qDebug() << "GameController: AI started:" << ai->getName();
 
-    // 启动AI定时器，每500毫秒执行一次
-    aiTimer->start(500);
+    // 启动AI定时器，每3000毫秒执行一次
+    aiTimer->start(3000);
     aiRunning = true;
 
     // 更新状态
@@ -306,11 +306,26 @@ void GameController::onAITimerTimeout() {
         return;
     }
 
+    // 添加静态变量跟踪是否正在计算
+    static bool isCalculating = false;
+
+    // 如果已经在计算中，则跳过
+    if (isCalculating) {
+        qDebug() << "GameController: AI is already calculating, skipping";
+        return;
+    }
+
+    // 设置计算标志
+    isCalculating = true;
+
     qDebug() << "GameController: AI timer timeout, calculating next move";
 
     // 让AI开始计算下一步移动
     // 计算结果将通过moveDecided信号发送
     ai->getBestMove(gameBoard);
+
+    // 在下一个事件循环中重置计算标志
+    QTimer::singleShot(0, []() { isCalculating = false; });
 }
 
 void GameController::onAIMoveDecided(int direction) {
@@ -322,17 +337,43 @@ void GameController::onAIMoveDecided(int direction) {
         return;
     }
 
-    // 检查移动是否有效
-    GameBoard testBoard = gameBoard;
-    bool validMove      = testBoard.moveTiles(direction);
+    // 使用QTimer::singleShot延迟执行移动，避免阻塞事件循环
+    QTimer::singleShot(100, this, [this, direction]() {
+        // 检查移动是否有效
+        GameBoard testBoard = gameBoard;
+        bool validMove      = testBoard.moveTiles(direction);
 
-    qDebug() << "GameController: AI move valid:" << validMove;
+        qDebug() << "GameController: AI move valid:" << validMove;
 
-    // 只有当移动有效时才执行
-    if (validMove) {
-        // 执行移动
-        handleMove(direction);
-    }
+        // 只有当移动有效时才执行
+        if (validMove) {
+            // 执行移动
+            handleMove(direction);
+        } else {
+            // 如果移动无效，检查是否有任何有效移动
+            for (int dir = 0; dir < 4; dir++) {
+                GameBoard tempBoard = gameBoard;
+                if (tempBoard.moveTiles(dir)) {
+                    qDebug() << "GameController: Found valid move:" << dir;
+                    // 执行这个有效移动
+                    handleMove(dir);
+                    break;
+                }
+            }
+        }
+    });
+
+    // 游戏结束检查移到lambda中
+    QTimer::singleShot(200, this, [this]() {
+        // 检查游戏是否结束
+        if (gameBoard.isGameOver()) {
+            qDebug() << "GameController: Game is over, stopping AI";
+            // 停止AI
+            stopAI();
+            // 显示游戏结束消息
+            handleGameOver();
+        }
+    });
 }
 
 // 实现更新分数和状态的函数

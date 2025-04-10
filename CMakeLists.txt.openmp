@@ -1,0 +1,126 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(2048-qt VERSION 0.1 LANGUAGES CXX)
+
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 查找OpenMP
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    add_compile_definitions(USE_OPENMP)
+endif()
+
+# 启用优化
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -mtune=native")
+elseif(MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /arch:AVX2")
+endif()
+
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Concurrent)
+
+set(PROJECT_SOURCES
+        main.cpp
+        mainwindow.cpp
+        mainwindow.h
+        mainwindow.ui
+)
+
+set(UI_SOURCES
+        ui/GameView.cpp
+        ui/GameView.h
+        ui/TileView.cpp
+        ui/TileView.h
+        ui/AIConfigDialog.cpp
+        ui/AIConfigDialog.h
+)
+
+set(CORE_SOURCES
+        core/GameBoard.cpp
+        core/GameBoard.h
+        core/Tile.cpp
+        core/Tile.h
+)
+
+set(UTILS_SOURCES
+        utils/GameController.cpp
+        utils/GameController.h
+        utils/ScoreManager.cpp
+        utils/ScoreManager.h
+)
+
+set(AI_SOURCES
+        ai/AIInterface.h
+        ai/BitBoard.cpp
+        ai/BitBoard.h
+        ai/BitBoardInitializer.cpp
+        ai/BitBoardInitializer.h
+        ai/BitBoardTables.cpp
+        ai/BitBoardTables.h
+        ai/ExpectimaxAI.cpp
+        ai/ExpectimaxAI.h
+        ai/ExpectimaxWorker.cpp
+        ai/ExpectimaxWorker.h
+        ai/ParallelExpectimaxAI.cpp
+        ai/ParallelExpectimaxAI.h
+        ai/ParallelExpectimaxWorker.cpp
+        ai/ParallelExpectimaxWorker.h
+        ai/evaluation/MonotonicityEval.cpp
+        ai/evaluation/MonotonicityEval.h
+        ai/evaluation/SmoothnessEval.cpp
+        ai/evaluation/SmoothnessEval.h
+        ai/evaluation/FreeTilesEval.cpp
+        ai/evaluation/FreeTilesEval.h
+        ai/evaluation/MergeEval.cpp
+        ai/evaluation/MergeEval.h
+        ai/evaluation/TilePlacementEval.cpp
+        ai/evaluation/TilePlacementEval.h
+        ai/evaluation/EnhancedEval.cpp
+        ai/evaluation/EnhancedEval.h
+)
+
+if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
+    qt_add_executable(2048-qt
+        MANUAL_FINALIZATION
+        ${PROJECT_SOURCES}
+        ${UI_SOURCES}
+        ${CORE_SOURCES}
+        ${UTILS_SOURCES}
+        ${AI_SOURCES}
+    )
+else()
+    add_executable(2048-qt
+        ${PROJECT_SOURCES}
+        ${UI_SOURCES}
+        ${CORE_SOURCES}
+        ${UTILS_SOURCES}
+        ${AI_SOURCES}
+    )
+endif()
+
+target_link_libraries(2048-qt PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Concurrent)
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(2048-qt PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+set_target_properties(2048-qt PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER my.example.com
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE TRUE
+    WIN32_EXECUTABLE TRUE
+)
+
+if(QT_VERSION_MAJOR EQUAL 6)
+    qt_finalize_executable(2048-qt)
+endif()

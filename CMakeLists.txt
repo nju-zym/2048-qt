@@ -44,12 +44,23 @@ set(UTILS_SOURCES
         utils/GameController.h
 )
 
+# 检查是否存在预编译的查找表
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ai/BitBoardTables.cpp")
+    message(STATUS "使用预编译的BitBoard查找表")
+    set(USE_PRECOMPILED_TABLES ON)
+    add_compile_definitions(USE_PRECOMPILED_TABLES)
+else()
+    message(STATUS "预编译的BitBoard查找表不存在，将在运行时计算")
+    set(USE_PRECOMPILED_TABLES OFF)
+endif()
+
 set(AI_SOURCES
         ai/AIInterface.h
         ai/BitBoard.cpp
         ai/BitBoard.h
         ai/BitBoardInitializer.cpp
         ai/BitBoardInitializer.h
+        ai/GenerateTables.cpp
         ai/ExpectimaxAI.cpp
         ai/ExpectimaxAI.h
         ai/ExpectimaxWorker.cpp
@@ -70,7 +81,21 @@ set(AI_SOURCES
         ai/evaluation/TilePlacementEval.h
         ai/evaluation/EnhancedEval.cpp
         ai/evaluation/EnhancedEval.h
+        ai/evaluation/CornerStrategyEval.cpp
+        ai/evaluation/CornerStrategyEval.h
+        ai/evaluation/LargeNumbersConnectionEval.cpp
+        ai/evaluation/LargeNumbersConnectionEval.h
+        ai/evaluation/RiskEval.cpp
+        ai/evaluation/RiskEval.h
 )
+
+# 如果存在预编译的查找表，添加到源文件列表中
+if(USE_PRECOMPILED_TABLES)
+    set(AI_SOURCES ${AI_SOURCES}
+        ai/BitBoardTables.h
+        ai/BitBoardTables.cpp
+    )
+endif()
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(2048-qt

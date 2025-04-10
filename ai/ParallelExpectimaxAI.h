@@ -123,6 +123,42 @@ class ParallelExpectimaxAI : public AIInterface {
      */
     bool getUseEnhancedEval() const;
 
+    /**
+     * @brief 设置是否使用动态深度调整
+     * @param useDynamicDepth 是否使用动态深度调整
+     */
+    void setUseDynamicDepth(bool useDynamicDepth);
+
+    /**
+     * @brief 获取是否使用动态深度调整
+     * @return 是否使用动态深度调整
+     */
+    bool getUseDynamicDepth() const;
+
+    /**
+     * @brief 设置最小搜索深度
+     * @param minDepth 最小搜索深度
+     */
+    void setMinDepth(int minDepth);
+
+    /**
+     * @brief 获取最小搜索深度
+     * @return 最小搜索深度
+     */
+    int getMinDepth() const;
+
+    /**
+     * @brief 设置最大搜索深度
+     * @param maxDepth 最大搜索深度
+     */
+    void setMaxDepth(int maxDepth);
+
+    /**
+     * @brief 获取最大搜索深度
+     * @return 最大搜索深度
+     */
+    int getMaxDepth() const;
+
    private slots:
     /**
      * @brief 处理工作线程计算出的移动
@@ -138,8 +174,20 @@ class ParallelExpectimaxAI : public AIInterface {
     mutable QMutex mutex;      // 互斥锁
     QWaitCondition condition;  // 条件变量
 
+    // 动态深度调整相关
+    bool useDynamicDepth;  // 是否使用动态深度调整
+    int minDepth;          // 最小搜索深度
+    int maxDepth;          // 最大搜索深度
+
     // 工作线程
     ParallelExpectimaxWorker* worker;
+
+    /**
+     * @brief 计算动态搜索深度
+     * @param board 当前游戏棋盘
+     * @return 动态搜索深度
+     */
+    int calculateDynamicDepth(GameBoard const& board) const;
 };
 
 #endif  // PARALLEL_EXPECTIMAX_AI_H
