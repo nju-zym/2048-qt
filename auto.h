@@ -2,6 +2,7 @@
 #define AUTO_H
 
 #include "BitBoardTables.h"
+#include "transposition_table.h"
 
 // 位棋盘类型定义
 using BitBoard = uint64_t;
@@ -50,14 +51,23 @@ class Auto : public QObject {
     // 初始化位棋盘表格 - 公开方法供其他类调用
     void initTables();
 
-    // 清除缓存的空方法（为了保持兼容性）
+    // 清除缓存的方法
     void clearExpectimaxCache();
+
+    // 启用或禁用置换表
+    void enableTranspositionTable(bool enable);
+
+    // 获取置换表统计信息
+    QPair<size_t, double> getTranspositionTableStats();
 
    private:
     // 策略参数
     QVector<double> strategyParams;
     QVector<double> defaultParams;  // 默认参数
     bool useLearnedParams;
+
+    // 置换表相关
+    bool useTranspositionTable;
 
     QMutex mutex;
 

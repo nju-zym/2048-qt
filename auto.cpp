@@ -170,7 +170,8 @@ bool Auto::isGameOverBitBoard(BitBoard board) {
 Auto::Auto()
     : strategyParams(5, 1.0),  // 初始化为5个参数，默认值为1.0
       defaultParams(5, 1.0),   // 初始化默认参数
-      useLearnedParams(false) {
+      useLearnedParams(false),
+      useTranspositionTable(true) {
     // 初始化默认参数为经过测试的有效值
     defaultParams[0] = 2.7;  // 空格数量权重
     defaultParams[1] = 1.8;  // 蛇形模式权重
@@ -788,10 +789,22 @@ void Auto::initTables() {
         Qt::QueuedConnection);
 }
 
-// 清除expectimax缓存的空方法（为了保持兼容性）
+// 清除expectimax缓存
 void Auto::clearExpectimaxCache() {
-    // 缓存机制已经完全移除，这个方法现在什么也不做
-    // 仅为了保持与现有代码的兼容性而保留
+    // 清除置换表
+    TranspositionTable::getInstance().clear();
+}
+
+// 启用或禁用置换表
+void Auto::enableTranspositionTable(bool enable) {
+    useTranspositionTable = enable;
+}
+
+// 获取置换表统计信息
+QPair<size_t, double> Auto::getTranspositionTableStats() {
+    size_t size  = TranspositionTable::getInstance().size();
+    double usage = TranspositionTable::getInstance().usageRate();
+    return qMakePair(size, usage);
 }
 
 // 计算移动的启发式评分 - 用于移动排序
@@ -990,7 +1003,7 @@ bool Auto::simulateMoveBitBoard(BitBoard& board, int direction, int& score) {
     return true;
 }
 
-// 使用位棋盘的expectimax算法 - 带启发式剪枝版本
+// 使用位棋盘的expectimax算法 - 带启发式剪枝和置换表版本
 int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int alpha, int beta) {
     // 防止栈溢出的静态计数器
     static thread_local int recursionDepth = 0;
@@ -1002,6 +1015,32 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int al
     if (recursionDepth > 20) {  // 绝对最大递归深度
         recursionDepth--;
         return evaluateBitBoard(board);
+    }
+
+    // 查询置换表
+    if (useTranspositionTable) {
+        int cachedScore;
+        NodeType nodeType;
+        if (TranspositionTable::getInstance().lookup(board, depth, isMaxPlayer, cachedScore, nodeType)) {
+            // 如果找到精确匹配的缓存项，直接返回
+            if (nodeType == NodeType::EXACT) {
+                recursionDepth--;
+                return cachedScore;
+            }
+            // 如果是下界，更新alpha
+            if (nodeType == NodeType::LOWER_BOUND && cachedScore > alpha) {
+                alpha = cachedScore;
+            }
+            // 如果是上界，更新beta
+            if (nodeType == NodeType::UPPER_BOUND && cachedScore < beta) {
+                beta = cachedScore;
+            }
+            // Alpha-Beta剪枝
+            if (alpha >= beta) {
+                recursionDepth--;
+                return cachedScore;
+            }
+        }
     }
 
     // 绝对深度限制 - 防止过深递归
@@ -1043,13 +1082,28 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int al
         maxValue = 0;
     }
 
-    // 根据棋盘复杂度动态调整搜索深度 - 但不要过深
+    // 根据棋盘复杂度动态调整搜索深度
     int extraDepth = 0;
 
-    // 简化的动态深度调整，防止搜索过深
-    if (emptyCount <= 4) {
-        extraDepth = 1;  // 当空格很少时增加搜索深度
+    // 更智能的动态深度调整
+    // 1. 根据空格数量调整深度
+    if (emptyCount <= 2) {
+        extraDepth = 2;  // 棋盘接近填满，使用更深的搜索
+    } else if (emptyCount <= 4) {
+        extraDepth = 1;  // 棋盘比较拥挤，适度增加搜索深度
+    } else if (emptyCount >= 10) {
+        extraDepth = -1;  // 棋盘很空时减少搜索深度，加快计算
     }
+
+    // 2. 根据棋盘上的最大值调整深度
+    // 当有大数字时，游戏可能接近结束，需要更谨慎的规划
+    if (maxValue >= 2048) {  // 2048对应的对数值是11
+        extraDepth += 1;     // 当有大数字时增加搜索深度
+    }
+
+    // 3. 防止搜索深度过深或过浅
+    extraDepth = std::min(extraDepth, 2);   // 最多增加两层深度
+    extraDepth = std::max(extraDepth, -1);  // 最多减少一层深度
 
     int result = 0;
     if (isMaxPlayer) {
@@ -1159,6 +1213,26 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int al
         result = static_cast<int>(totalScore / tilesToSimulate);
     }
 
+    // 存储结果到置换表
+    if (useTranspositionTable) {
+        NodeType nodeType;
+        if (isMaxPlayer) {
+            // 对于MAX节点
+            if (result <= alpha) {
+                nodeType = NodeType::UPPER_BOUND;  // 上界
+            } else if (result >= beta) {
+                nodeType = NodeType::LOWER_BOUND;  // 下界
+            } else {
+                nodeType = NodeType::EXACT;  // 精确值
+            }
+        } else {
+            // 对于CHANCE节点，我们只存储精确值
+            nodeType = NodeType::EXACT;
+        }
+
+        TranspositionTable::getInstance().store(board, result, depth, nodeType, isMaxPlayer);
+    }
+
     // 递归计数器减少
     recursionDepth--;
     return result;
@@ -1166,6 +1240,16 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int al
 
 // 带剪枝的Expectimax算法的入口点
 int Auto::expectimaxBitBoardWithPruning(BitBoard board, int depth, bool isMaxPlayer) {
+    // 清除置换表统计信息
+    static int callCount = 0;
+    callCount++;
+
+    // 每100次调用输出一次置换表统计信息
+    if (callCount % 100 == 0 && useTranspositionTable) {
+        QPair<size_t, double> stats = getTranspositionTableStats();
+        qDebug() << "Transposition table stats: size =" << stats.first << ", usage =" << stats.second * 100.0 << "%";
+    }
+
     return expectimaxBitBoard(board, depth, isMaxPlayer, -1000000, 1000000);
 }
 

@@ -21,6 +21,8 @@ set(PROJECT_SOURCES
         auto.h
         BitBoardTables.h
         BitBoardTables.cpp
+        transposition_table.h
+        transposition_table.cpp
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
