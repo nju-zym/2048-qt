@@ -77,6 +77,7 @@ class MainWindow : public QMainWindow {
     bool moveTiles(int direction);  // 0=up, 1=right, 2=down, 3=left
     void generateNewTile(bool animate = true);
     bool isMoveAvailable() const;
+    bool isMoveValidInDirection(int direction) const;
     bool isGameOver() const;
     bool isGameWon() const;
     bool isTileEmpty(int row, int col) const;        // 检查格子是否为空

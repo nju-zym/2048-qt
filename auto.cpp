@@ -10,69 +10,114 @@
 #include <QJsonObject>
 #include <QMutexLocker>
 
+// 常量定义
+static uint64_t const ROW_MASK = 0xFF'FFULL;
+
+// 转置棋盘
+inline static BitBoard transpose(BitBoard x) {
+    BitBoard a1 = x & 0xF0'F0'0F'0F'F0'F0'0F'0FULL;
+    BitBoard a2 = x & 0x00'00'F0'F0'00'00'F0'F0ULL;
+    BitBoard a3 = x & 0x0F'0F'00'00'0F'0F'00'00ULL;
+    BitBoard a  = a1 | (a2 << 12) | (a3 >> 12);
+    BitBoard b1 = a & 0xFF'00'FF'00'00'FF'00'FFULL;
+    BitBoard b2 = a & 0x00'FF'00'FF'00'00'00'00ULL;
+    BitBoard b3 = a & 0x00'00'00'00'FF'00'FF'00ULL;
+    return b1 | (b2 >> 24) | (b3 << 24);
+}
+
 // 执行向上移动
 inline static BitBoard execute_move_0(BitBoard board) {
-    BitBoard ret  = board;
-    BitBoard t    = transpose(board);
-    ret          ^= col_up_table[(t >> 0) & ROW_MASK] << 0;
-    ret          ^= col_up_table[(t >> 16) & ROW_MASK] << 4;
-    ret          ^= col_up_table[(t >> 32) & ROW_MASK] << 8;
-    ret          ^= col_up_table[(t >> 48) & ROW_MASK] << 12;
+    BitBoard ret = board;
+    BitBoard t   = transpose(board);
+
+    // 使用预编译的表格
+    for (int i = 0; i < 4; ++i) {
+        uint16_t row      = (t >> (i * 16)) & ROW_MASK;
+        uint16_t new_row  = BitBoardTables::LEFT_MOVE_TABLE[row];
+        BitBoard diff     = static_cast<BitBoard>(new_row ^ row) << (i * 16);
+        ret              ^= transpose(diff);
+    }
+
     return ret;
 }
 
 // 执行向下移动
 inline static BitBoard execute_move_1(BitBoard board) {
-    BitBoard ret  = board;
-    BitBoard t    = transpose(board);
-    ret          ^= col_down_table[(t >> 0) & ROW_MASK] << 0;
-    ret          ^= col_down_table[(t >> 16) & ROW_MASK] << 4;
-    ret          ^= col_down_table[(t >> 32) & ROW_MASK] << 8;
-    ret          ^= col_down_table[(t >> 48) & ROW_MASK] << 12;
+    BitBoard ret = board;
+    BitBoard t   = transpose(board);
+
+    // 使用预编译的表格
+    for (int i = 0; i < 4; ++i) {
+        uint16_t row         = (t >> (i * 16)) & ROW_MASK;
+        uint16_t rev_row     = (row & 0xF) << 12 | (row & 0xF0) << 4 | (row & 0xF'00) >> 4 | (row & 0xF0'00) >> 12;
+        uint16_t new_rev_row = BitBoardTables::LEFT_MOVE_TABLE[rev_row];
+        uint16_t new_row     = (new_rev_row & 0xF) << 12 | (new_rev_row & 0xF0) << 4 | (new_rev_row & 0xF'00) >> 4
+                           | (new_rev_row & 0xF0'00) >> 12;
+        BitBoard diff  = static_cast<BitBoard>(new_row ^ row) << (i * 16);
+        ret           ^= transpose(diff);
+    }
+
     return ret;
 }
 
 // 执行向左移动
 inline static BitBoard execute_move_2(BitBoard board) {
-    BitBoard ret  = board;
-    ret          ^= BitBoard(row_left_table[(board >> 0) & ROW_MASK]) << 0;
-    ret          ^= BitBoard(row_left_table[(board >> 16) & ROW_MASK]) << 16;
-    ret          ^= BitBoard(row_left_table[(board >> 32) & ROW_MASK]) << 32;
-    ret          ^= BitBoard(row_left_table[(board >> 48) & ROW_MASK]) << 48;
+    BitBoard ret = board;
+
+    // 使用预编译的表格
+    for (int i = 0; i < 4; ++i) {
+        uint16_t row      = (board >> (i * 16)) & ROW_MASK;
+        uint16_t new_row  = BitBoardTables::LEFT_MOVE_TABLE[row];
+        ret              ^= static_cast<BitBoard>(new_row ^ row) << (i * 16);
+    }
+
     return ret;
 }
 
 // 执行向右移动
 inline static BitBoard execute_move_3(BitBoard board) {
-    BitBoard ret  = board;
-    ret          ^= BitBoard(row_right_table[(board >> 0) & ROW_MASK]) << 0;
-    ret          ^= BitBoard(row_right_table[(board >> 16) & ROW_MASK]) << 16;
-    ret          ^= BitBoard(row_right_table[(board >> 32) & ROW_MASK]) << 32;
-    ret          ^= BitBoard(row_right_table[(board >> 48) & ROW_MASK]) << 48;
+    BitBoard ret = board;
+
+    // 使用预编译的表格
+    for (int i = 0; i < 4; ++i) {
+        uint16_t row         = (board >> (i * 16)) & ROW_MASK;
+        uint16_t rev_row     = (row & 0xF) << 12 | (row & 0xF0) << 4 | (row & 0xF'00) >> 4 | (row & 0xF0'00) >> 12;
+        uint16_t new_rev_row = BitBoardTables::LEFT_MOVE_TABLE[rev_row];
+        uint16_t new_row     = (new_rev_row & 0xF) << 12 | (new_rev_row & 0xF0) << 4 | (new_rev_row & 0xF'00) >> 4
+                           | (new_rev_row & 0xF0'00) >> 12;
+        ret ^= static_cast<BitBoard>(new_row ^ row) << (i * 16);
+    }
+
     return ret;
 }
 
-// 计算空格数 - 优化版本
+// 计算空格数 - 高效位操作版本
 int Auto::countEmptyTiles(BitBoard board) {
-    // 使用位操作快速计算空格数
-    board |= (board >> 2) & 0x33'33'33'33'33'33'33'33ULL;
-    board |= (board >> 1);
-    board  = ~board & 0x11'11'11'11'11'11'11'11ULL;
+    // 创建一个掩码，将每个单元的最低位设为1
+    // 如果该单元为0，则整个单元的所有位都为0
+    BitBoard mask  = board;
+    mask          |= (mask >> 1);
+    mask          |= (mask >> 2);
+    mask          |= (mask >> 3);
+    // 现在每个4位单元中，如果原始值为0，则所有位都是0，否则最低位是1
 
-    // 此时每个半字节是：
-    // 0 如果原始半字节非零
-    // 1 如果原始半字节为零
-    // 现在将它们全部相加
+    // 只保留每个单元的最低位
+    mask &= 0x11'11'11'11'11'11'11'11ULL;
 
-    board += board >> 32;
-    board += board >> 16;
-    board += board >> 8;
-    board += board >> 4;  // 如果有16个空位，这可能会溢出到下一个半字节
+    // 计算有多少个非零单元
+    // 使用位计数技术
+    mask = (mask & 0x55'55'55'55'55'55'55'55ULL) + ((mask >> 1) & 0x55'55'55'55'55'55'55'55ULL);
+    mask = (mask & 0x33'33'33'33'33'33'33'33ULL) + ((mask >> 2) & 0x33'33'33'33'33'33'33'33ULL);
+    mask = (mask & 0x0f'0f'0f'0f'0f'0f'0f'0fULL) + ((mask >> 4) & 0x0f'0f'0f'0f'0f'0f'0f'0fULL);
+    mask = (mask & 0x00'ff'00'ff'00'ff'00'ffULL) + ((mask >> 8) & 0x00'ff'00'ff'00'ff'00'ffULL);
+    mask = (mask & 0x00'00'ff'ff'00'00'ff'ffULL) + ((mask >> 16) & 0x00'00'ff'ff'00'00'ff'ffULL);
+    mask = (mask & 0x00'00'00'00'ff'ff'ff'ffULL) + ((mask >> 32) & 0x00'00'00'00'ff'ff'ff'ffULL);
 
-    return static_cast<int>(board & 0xf);
+    // 返回空格数（总单元数 - 非空单元数）
+    return 16 - static_cast<int>(mask);
 }
 
-// 检查游戏是否结束
+// 检查游戏是否结束 - 安全版本
 bool Auto::isGameOverBitBoard(BitBoard board) {
     // 如果有空格，游戏未结束
     if (countEmptyTiles(board) > 0) {
@@ -82,12 +127,18 @@ bool Auto::isGameOverBitBoard(BitBoard board) {
     // 检查水平方向是否可以合并
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 3; ++j) {
+            // 使用int而非uint64_t来避免不必要的转换
             int pos1 = (i * 4 + j) * 4;
             int pos2 = (i * 4 + j + 1) * 4;
-            int val1 = static_cast<int>((board >> pos1) & 0xF);
-            int val2 = static_cast<int>((board >> pos2) & 0xF);
-            if (val1 == val2 && val1 != 0) {
-                return false;  // 可以合并，游戏未结束
+
+            // 确保位移位数在合理范围内
+            if (pos1 >= 0 && pos1 < 64 && pos2 >= 0 && pos2 < 64) {
+                // 使用无符号类型进行位移操作
+                uint64_t val1 = (board >> static_cast<uint64_t>(pos1)) & 0xFULL;
+                uint64_t val2 = (board >> static_cast<uint64_t>(pos2)) & 0xFULL;
+                if (val1 == val2 && val1 != 0) {
+                    return false;  // 可以合并，游戏未结束
+                }
             }
         }
     }
@@ -95,12 +146,18 @@ bool Auto::isGameOverBitBoard(BitBoard board) {
     // 检查垂直方向是否可以合并
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 4; ++j) {
+            // 使用int而非uint64_t来避免不必要的转换
             int pos1 = (i * 4 + j) * 4;
             int pos2 = ((i + 1) * 4 + j) * 4;
-            int val1 = static_cast<int>((board >> pos1) & 0xF);
-            int val2 = static_cast<int>((board >> pos2) & 0xF);
-            if (val1 == val2 && val1 != 0) {
-                return false;  // 可以合并，游戏未结束
+
+            // 确保位移位数在合理范围内
+            if (pos1 >= 0 && pos1 < 64 && pos2 >= 0 && pos2 < 64) {
+                // 使用无符号类型进行位移操作
+                uint64_t val1 = (board >> static_cast<uint64_t>(pos1)) & 0xFULL;
+                uint64_t val2 = (board >> static_cast<uint64_t>(pos2)) & 0xFULL;
+                if (val1 == val2 && val1 != 0) {
+                    return false;  // 可以合并，游戏未结束
+                }
             }
         }
     }
@@ -133,10 +190,6 @@ Auto::Auto()
 
 // 析构函数
 Auto::~Auto() {
-    // 清除缓存
-    expectimaxCache.clear();
-    bitboardCache.clear();
-
     qDebug() << "Auto object destroyed successfully";
 }
 
@@ -161,65 +214,19 @@ int Auto::findBestMove(QVector<QVector<int>> const& board) {
     int maxValue = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (board[i][j] > maxValue) {
-                maxValue = board[i][j];
-            }
+            maxValue = std::max(maxValue, board[i][j]);
         }
     }
 
-    // 如果棋盘上有高级方块，使用位棋盘实现以提高性能
-    if (maxValue >= 2048) {
-        // 清除缓存以确保最新的计算结果
-        clearExpectimaxCache();
-
-        // 初始化预计算表（如果还没有初始化）
-        static bool tablesInitialized = false;
-        if (!tablesInitialized) {
-            initTables();
-            tablesInitialized = true;
-        }
-
-        // 使用位棋盘实现的最佳移动函数
-        return getBestMoveBitBoard(board);
+    // 初始化预计算表（如果还没有初始化）
+    static bool tablesInitialized = false;
+    if (!tablesInitialized) {
+        initTables();
+        tablesInitialized = true;
     }
 
-    int bestScore     = -1;
-    int bestDirection = -1;
-
-    // 尝试每个方向，计算移动后的棋盘评分
-    for (int direction = 0; direction < 4; ++direction) {
-        // 创建棋盘副本
-        QVector<QVector<int>> boardCopy = board;
-
-        // 模拟移动
-        int moveScore = 0;
-        bool moved    = simulateMove(boardCopy, direction, moveScore);
-
-        // 如果这个方向可以移动，计算移动后的棋盘评分
-        if (moved) {
-            int score = 0;
-
-            // 无论是否使用学习参数，都使用相同的评估方法，只是参数不同
-            // 先进行基础评估
-            score = evaluateWithParams(boardCopy, useLearnedParams ? strategyParams : defaultParams) + moveScore;
-
-            // 使用expectimax算法进行深度为3的搜索
-            int simulationScore  = expectimax(boardCopy, 3, false);
-            score               += simulationScore;
-
-            if (score > bestScore) {
-                bestScore     = score;
-                bestDirection = direction;
-            }
-        }
-    }
-
-    // 如果没有有效移动，随机选择一个方向
-    if (bestDirection == -1) {
-        bestDirection = rand() % 4;  // 随机选择一个方向
-    }
-
-    return bestDirection;
+    // 始终使用位棋盘实现的最佳移动函数，以保持算法一致性
+    return getBestMoveBitBoard(board);
 }
 
 // evaluateBoard: 评估棋盘状态
@@ -364,10 +371,10 @@ int Auto::evaluateAdvancedPattern(QVector<QVector<int>> const& boardState) {
     // 找出最大值及其位置
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
+            maxValue = std::max(maxValue, boardState[i][j]);
+            if (boardState[i][j] == maxValue) {
+                maxRow = i;
+                maxCol = j;
             }
         }
     }
@@ -490,6 +497,11 @@ int Auto::evaluateAdvancedPattern(QVector<QVector<int>> const& boardState) {
         score -= 500000;  // 大幅惩罚游戏结束状态
     }
 
+    // 8. 角落奖励 - 如果最大值在角落，给予额外奖励
+    if ((maxRow == 0 || maxRow == 3) && (maxCol == 0 || maxCol == 3)) {
+        score += maxValue * 2;  // 奖励最大值在角落
+    }
+
     return score;
 }
 
@@ -521,10 +533,10 @@ int Auto::evaluateBoardAdvanced(QVector<QVector<int>> const& boardState) {
     // 找出最大值及其位置
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
+            maxValue = std::max(maxValue, boardState[i][j]);
+            if (boardState[i][j] == maxValue) {
+                maxRow = i;
+                maxCol = j;
             }
             // 根据权重矩阵计算得分
             if (boardState[i][j] > 0) {
@@ -744,12 +756,6 @@ bool Auto::simulateMove(QVector<QVector<int>>& boardState, int direction, int& s
     return moved;
 }
 
-// 清除expectimax缓存
-void Auto::clearExpectimaxCache() {
-    expectimaxCache.clear();
-    bitboardCache.clear();
-}
-
 // 初始化位棋盘的预计算表
 void Auto::initTables() {
     // 使用静态标志确保表只初始化一次
@@ -782,40 +788,100 @@ void Auto::initTables() {
         Qt::QueuedConnection);
 }
 
-// 将标准棋盘转换为位棋盘
+// 清除expectimax缓存的空方法（为了保持兼容性）
+void Auto::clearExpectimaxCache() {
+    // 缓存机制已经完全移除，这个方法现在什么也不做
+    // 仅为了保持与现有代码的兼容性而保留
+}
+
+// 计算移动的启发式评分 - 用于移动排序
+int Auto::calculateMoveHeuristic(BitBoard board, int direction) {
+    BitBoard newBoard = board;
+
+    // 模拟移动
+    switch (direction) {
+        case 0:  // 上
+            newBoard = execute_move_0(board);
+            break;
+        case 1:  // 下
+            newBoard = execute_move_1(board);
+            break;
+        case 2:  // 左
+            newBoard = execute_move_2(board);
+            break;
+        case 3:  // 右
+            newBoard = execute_move_3(board);
+            break;
+        default:
+            break;
+    }
+
+    // 如果移动无效，返回最低分
+    if (newBoard == board) {
+        return -1000000;
+    }
+
+    // 1. 计算移动后的空格数
+    int emptyTiles = countEmptyTiles(newBoard);
+    int moveScore  = emptyTiles * 10;
+
+    // 2. 评估移动后的棋盘状态
+    moveScore += evaluateBitBoard(newBoard);
+
+    // 3. 如果是向上或向左移动，给予小幅奖励
+    // 这有助于保持大数字在角落
+    if (direction == 0 || direction == 2) {
+        moveScore += 5;
+    }
+
+    return moveScore;
+}
+
+// 将标准棋盘转换为位棋盘 - 安全版本
 BitBoard Auto::convertToBitBoard(QVector<QVector<int>> const& boardState) {
-    BitBoard board = 0;
+    BitBoard board = 0ULL;
 
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            int val = boardState[i][j];
-            int pos = 0;
+            int val      = boardState[i][j];
+            uint64_t pos = 0;
 
             // 计算位置的对数值
             if (val > 0) {
-                pos = static_cast<int>(log2(val));
+                pos = static_cast<uint64_t>(log2(static_cast<double>(val)));
+            }
+
+            // 安全检查
+            if (pos > 15) {
+                pos = 15;  // 限制最大值为15，避免溢出
             }
 
             // 将值放入位棋盘
-            board |= (BitBoard)(pos) << ((i * 4 + j) * 4);
+            uint64_t shift  = static_cast<uint64_t>((i * 4 + j) * 4);
+            board          |= (pos << shift);
         }
     }
 
     return board;
 }
 
-// 将位棋盘转换回标准棋盘
+// 将位棋盘转换回标准棋盘 - 安全版本
 QVector<QVector<int>> Auto::convertFromBitBoard(BitBoard board) {
     QVector<QVector<int>> result(4, QVector<int>(4, 0));
 
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            int pos = (i * 4 + j) * 4;
-            int val = (board >> pos) & 0xf;
+            uint64_t pos = static_cast<uint64_t>((i * 4 + j) * 4);
+            uint64_t val = (board >> pos) & 0xfULL;
 
             // 将对数值转换回实际值
             if (val > 0) {
-                result[i][j] = 1 << val;
+                // 防止溢出
+                if (val < 31) {  // 限制最大值，避免移位过多
+                    result[i][j] = 1 << static_cast<int>(val);
+                } else {
+                    result[i][j] = 2147483647;  // INT_MAX
+                }
             } else {
                 result[i][j] = 0;
             }
@@ -825,35 +891,55 @@ QVector<QVector<int>> Auto::convertFromBitBoard(BitBoard board) {
     return result;
 }
 
-// 评估位棋盘
+// 评估位棋盘 - 高效版本
 int Auto::evaluateBitBoard(BitBoard board) {
-    // 使用预计算的表格进行评估
-    float score = 0.0f;
+    // 使用预编译的表格进行评估
+    int score = 0;
 
-    // 行评估
-    score += heur_score_table[(board >> 0) & ROW_MASK];
-    score += heur_score_table[(board >> 16) & ROW_MASK];
-    score += heur_score_table[(board >> 32) & ROW_MASK];
-    score += heur_score_table[(board >> 48) & ROW_MASK];
+    // 直接使用位操作提取行数据并访问评分表
+    // 使用内联定义避免函数调用开销
+    score += BitBoardTables::SCORE_TABLE[static_cast<uint16_t>((board >> 0ULL) & 0xFF'FFULL)];
+    score += BitBoardTables::SCORE_TABLE[static_cast<uint16_t>((board >> 16ULL) & 0xFF'FFULL)];
+    score += BitBoardTables::SCORE_TABLE[static_cast<uint16_t>((board >> 32ULL) & 0xFF'FFULL)];
+    score += BitBoardTables::SCORE_TABLE[static_cast<uint16_t>((board >> 48ULL) & 0xFF'FFULL)];
 
-    // 列评估（转置后）
-    BitBoard t  = transpose(board);
-    score      += heur_score_table[(t >> 0) & ROW_MASK];
-    score      += heur_score_table[(t >> 16) & ROW_MASK];
-    score      += heur_score_table[(t >> 32) & ROW_MASK];
-    score      += heur_score_table[(t >> 48) & ROW_MASK];
+    // 空格数量奖励 - 使用位计数技术直接计算
+    // 创建一个掩码，将每个单元的最低位设为1
+    BitBoard mask  = board;
+    mask          |= (mask >> 1);
+    mask          |= (mask >> 2);
+    mask          |= (mask >> 3);
 
-    // 空格数量奖励
-    int emptyTiles  = countEmptyTiles(board);
-    score          += emptyTiles * 30.0f;
+    // 只保留每个单元的最低位
+    mask &= 0x11'11'11'11'11'11'11'11ULL;
 
-    return static_cast<int>(score);
+    // 计算有多少个非零单元
+    mask = (mask & 0x55'55'55'55'55'55'55'55ULL) + ((mask >> 1) & 0x55'55'55'55'55'55'55'55ULL);
+    mask = (mask & 0x33'33'33'33'33'33'33'33ULL) + ((mask >> 2) & 0x33'33'33'33'33'33'33'33ULL);
+    mask = (mask & 0x0f'0f'0f'0f'0f'0f'0f'0fULL) + ((mask >> 4) & 0x0f'0f'0f'0f'0f'0f'0f'0fULL);
+    mask = (mask & 0x00'ff'00'ff'00'ff'00'ffULL) + ((mask >> 8) & 0x00'ff'00'ff'00'ff'00'ffULL);
+    mask = (mask & 0x00'00'ff'ff'00'00'ff'ffULL) + ((mask >> 16) & 0x00'00'ff'ff'00'00'ff'ffULL);
+    mask = (mask & 0x00'00'00'00'ff'ff'ff'ffULL) + ((mask >> 32) & 0x00'00'00'00'ff'ff'ff'ffULL);
+
+    // 空格数 = 总单元数 - 非空单元数
+    int emptyTiles = 16 - static_cast<int>(mask);
+
+    // 空格奖励
+    score += emptyTiles * 10;
+
+    return score;
 }
 
-// 模拟移动位棋盘 - 使用直接位操作以提高性能
+// 模拟移动位棋盘 - 使用直接位操作以提高性能 - 安全版本
 bool Auto::simulateMoveBitBoard(BitBoard& board, int direction, int& score) {
+    // 保存原始棋盘状态以进行比较
     BitBoard oldBoard = board;
     score             = 0;
+
+    // 验证方向参数
+    if (direction < 0 || direction > 3) {
+        return false;
+    }
 
     // 使用直接位操作执行移动
     switch (direction) {
@@ -878,84 +964,116 @@ bool Auto::simulateMoveBitBoard(BitBoard& board, int direction, int& score) {
         return false;
     }
 
-    // 计算分数 - 分数来自于合并的方块
-    BitBoard diff = oldBoard ^ board;
-    BitBoard temp = diff;
-    while (temp) {
-        int pos = __builtin_ctzll(temp) / 4 * 4;
-        int val = (board >> pos) & 0xf;
-        if (val > 1) {  // 如果发生了合并
-            score += (1 << val);
+    // 简化的分数计算 - 使用安全的方式计算分数
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            // 使用int而非uint64_t来避免不必要的转换
+            int pos = (i * 4 + j) * 4;
+            // 确保位移位数在合理范围内
+            if (pos >= 0 && pos < 64) {
+                uint64_t oldVal = (oldBoard >> pos) & 0xFULL;
+                uint64_t newVal = (board >> pos) & 0xFULL;
+
+                // 如果新值大于旧值，说明发生了合并
+                if (newVal > oldVal && newVal > 1) {
+                    // 安全地计算分数，防止移位过多
+                    if (newVal < 31) {  // 防止移位过多导致溢出
+                        score += (1 << static_cast<int>(newVal));
+                    } else {
+                        score += 2147483647;  // INT_MAX
+                    }
+                }
+            }
         }
-        temp &= ~(0xfULL << pos);
     }
 
     return true;
 }
 
-// 使用位棋盘的expectimax算法
-int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
-    // 检查缓存
-    BitBoardState state{board, depth, isMaxPlayer};
-    auto cacheIt = bitboardCache.find(state);
-    if (cacheIt != bitboardCache.end()) {
-        return cacheIt->second;
+// 使用位棋盘的expectimax算法 - 带启发式剪枝版本
+int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer, int alpha, int beta) {
+    // 防止栈溢出的静态计数器
+    static thread_local int recursionDepth = 0;
+
+    // 递归深度计数
+    recursionDepth++;
+
+    // 如果递归过深，直接返回评估分数
+    if (recursionDepth > 20) {  // 绝对最大递归深度
+        recursionDepth--;
+        return evaluateBitBoard(board);
     }
 
     // 绝对深度限制 - 防止过深递归
-    static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
-    if (depth > MAX_ABSOLUTE_DEPTH) {
-        depth = MAX_ABSOLUTE_DEPTH;
-    }
+    static int const MAX_ABSOLUTE_DEPTH = 3;  // 降低最大深度以提高性能和防止栈溢出
+    depth                               = std::min(depth, MAX_ABSOLUTE_DEPTH);
 
     // 如果到达最大深度，返回评估分数
     if (depth <= 0) {
         // 直接使用位棋盘评估函数
-        int score            = evaluateBitBoard(board);
-        bitboardCache[state] = score;  // 缓存结果
+        int score = evaluateBitBoard(board);
+        recursionDepth--;
         return score;
     }
 
     // 检测游戏是否结束
     if (isGameOverBitBoard(board)) {
-        int score            = -500000;  // 游戏结束给予大量惩罚
-        bitboardCache[state] = score;
+        int score = -500000;  // 游戏结束给予大量惩罚
+        recursionDepth--;
         return score;
     }
 
     // 快速检测空格数
     int emptyCount = countEmptyTiles(board);
 
-    // 获取最大值
+    // 获取最大值 - 安全版本
     int maxValue = 0;
     for (int i = 0; i < 16; i++) {
-        int shift = i * 4;
-        int value = (board >> shift) & 0xF;
-        if (value > maxValue) {
-            maxValue = value;
-        }
+        uint64_t shift = static_cast<uint64_t>(i * 4);
+        uint64_t value = (board >> shift) & 0xFULL;
+        maxValue       = std::max(maxValue, static_cast<int>(value));
     }
-    // 将对数值转换为实际值
-    maxValue = maxValue > 0 ? (1 << maxValue) : 0;
 
-    // 对于高级棋盘，减少搜索深度以提高性能
+    // 将对数值转换为实际值
+    if (maxValue > 0 && maxValue < 31) {  // 防止溢出
+        maxValue = 1 << maxValue;
+    } else if (maxValue >= 31) {
+        maxValue = 2147483647;  // INT_MAX
+    } else {
+        maxValue = 0;
+    }
+
+    // 根据棋盘复杂度动态调整搜索深度 - 但不要过深
     int extraDepth = 0;
-    if (maxValue >= 2048) {  // 2048 = 2^11
-        // 对于高级棋盘，根据空格数量动态调整搜索深度
-        if (emptyCount <= 4) {
-            depth = std::min(depth, 3);  // 空格很少时限制深度
-        } else {
-            extraDepth = 1;  // 空格较多时增加深度
-        }
+
+    // 简化的动态深度调整，防止搜索过深
+    if (emptyCount <= 4) {
+        extraDepth = 1;  // 当空格很少时增加搜索深度
     }
 
     int result = 0;
     if (isMaxPlayer) {
         // MAX节点：选择最佳移动
-        int bestScore = -1;
+        int bestScore = alpha;  // 使用alpha作为初始最佳分数
 
-        // 尝试所有可能的移动
+        // 对移动进行排序，优先探索更有希望的移动
+        std::array<std::pair<int, int>, 4> moveScores;
         for (int direction = 0; direction < 4; ++direction) {
+            moveScores[direction] = {direction, calculateMoveHeuristic(board, direction)};
+        }
+
+        // 按启发式评分从高到低排序
+        std::sort(moveScores.begin(), moveScores.end(), [](std::pair<int, int> const& a, std::pair<int, int> const& b) {
+            return a.second > b.second;
+        });
+
+        // 尝试所有可能的移动（按排序后的顺序）
+        for (auto const& [direction, heuristic] : moveScores) {
+            // 如果启发式评分很低，说明这个移动无效，跳过
+            if (heuristic == -1000000) {
+                continue;
+            }
+
             BitBoard boardCopy = board;
             int moveScore      = 0;
 
@@ -963,8 +1081,18 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
 
             if (moved) {
                 // 递归计算期望分数
-                int score = moveScore + expectimaxBitBoard(boardCopy, depth - 1 + extraDepth, false);
-                bestScore = std::max(bestScore, score);
+                int score = moveScore + expectimaxBitBoard(boardCopy, depth - 1 + extraDepth, false, bestScore, beta);
+
+                // 更新最佳分数
+                if (score > bestScore) {
+                    bestScore = score;
+
+                    // Beta剪枝：如果当前分数已经超过beta，则可以提前终止
+                    // 这在Expectimax中不是严格的Alpha-Beta剪枝，但可以减少一些不必要的搜索
+                    if (bestScore >= beta) {
+                        break;
+                    }
+                }
             }
         }
 
@@ -973,15 +1101,18 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
         // CHANCE节点：随机生成新方块
         // 如果没有空格，返回评估分数
         if (emptyCount == 0) {
-            int score            = evaluateBitBoard(board);
-            bitboardCache[state] = score;
+            int score = evaluateBitBoard(board);
+            recursionDepth--;
             return score;
         }
 
-        // 优化：对于高级棋盘，只模拟一个空格以提高性能
-        int tilesToSimulate = 1;
-        if (maxValue < 2048 && emptyCount > 1) {
-            tilesToSimulate = std::min(2, emptyCount);
+        // 减少模拟的空格数量，提高性能
+        // 当空格过多时，只模拟一部分空格
+        int tilesToSimulate = std::min(2, emptyCount);
+
+        // 如果空格过多，可以进一步减少模拟数量
+        if (emptyCount > 6 && depth > 1) {
+            tilesToSimulate = 1;  // 在深度较大且空格较多时只模拟一个空格
         }
 
         double totalScore = 0.0;
@@ -991,8 +1122,8 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
         // 直接从位棋盘获取空格位置
         for (int i = 0; i < 4; ++i) {
             for (int j = 0; j < 4; ++j) {
-                int pos = (i * 4 + j) * 4;
-                int val = (board >> pos) & 0xF;
+                uint64_t pos = static_cast<uint64_t>((i * 4 + j) * 4);
+                uint64_t val = (board >> pos) & 0xFULL;
                 if (val == 0) {
                     emptyPositions.append(qMakePair(i, j));
                     if (emptyPositions.size() >= tilesToSimulate) {
@@ -1010,42 +1141,32 @@ int Auto::expectimaxBitBoard(BitBoard board, int depth, bool isMaxPlayer) {
             int row = emptyPositions[i].first;
             int col = emptyPositions[i].second;
 
-            // 直接在位棋盘上模拟生成2和4
+            // 直接在位棋盘上模拟生成2
             BitBoard bitBoardWith2 = board;
             int pos2               = (row * 4 + col) * 4;
-            // 清零该位置然后设置为2（1对应于位棋盘中的2）
-            bitBoardWith2 &= ~(0xfULL << pos2);
-            bitBoardWith2 |= 1ULL << pos2;
+            // 确保位移位数在合理范围内
+            if (pos2 >= 0 && pos2 < 64) {
+                // 清零该位置然后设置为2（1对应于位棋盘中的2）
+                bitBoardWith2 &= ~(0xfULL << pos2);
+                bitBoardWith2 |= 1ULL << pos2;
 
-            // 优化：对于高级棋盘，只考虑生成2的情况
-            if (maxValue >= 4096) {  // 4096 = 2^12
-                totalScore += expectimaxBitBoard(bitBoardWith2, depth - 1, true);
-            } else {
-                // 创建生成4的位棋盘
-                BitBoard bitBoardWith4 = board;
-                // 清零该位置然后设置为4（2对应于位棋盘中的4）
-                bitBoardWith4 &= ~(0xfULL << pos2);
-                bitBoardWith4 |= 2ULL << pos2;
-
-                // 90%概率生成2，10%概率生成4
-                totalScore += 0.9 * expectimaxBitBoard(bitBoardWith2, depth - 1, true);
-                totalScore += 0.1 * expectimaxBitBoard(bitBoardWith4, depth - 1, true);
+                // 简化计算，只考虑生成2的情况，提高性能
+                // 对于概率节点，使用当前的alpha和beta值
+                totalScore += expectimaxBitBoard(bitBoardWith2, depth - 1 + extraDepth, true, alpha, beta);
             }
         }
 
         result = static_cast<int>(totalScore / tilesToSimulate);
     }
 
-    // 缓存结果
-    bitboardCache[state] = result;
-
-    // 限制缓存大小以防止内存溢出
-    if (bitboardCache.size() > 10000) {
-        // 当缓存过大时清除
-        bitboardCache.clear();
-    }
-
+    // 递归计数器减少
+    recursionDepth--;
     return result;
+}
+
+// 带剪枝的Expectimax算法的入口点
+int Auto::expectimaxBitBoardWithPruning(BitBoard board, int depth, bool isMaxPlayer) {
+    return expectimaxBitBoard(board, depth, isMaxPlayer, -1000000, 1000000);
 }
 
 // 使用位棋盘优化的getBestMove函数
@@ -1056,30 +1177,61 @@ int Auto::getBestMoveBitBoard(QVector<QVector<int>> const& boardState) {
     int bestMove  = -1;
     int bestScore = -1;
 
-    // 尝试所有可能的移动
-    for (int move = 0; move < 4; ++move) {
+    // 对移动进行排序，优先探索更有希望的移动
+    std::array<std::pair<int, int>, 4> moveScores;
+    for (int direction = 0; direction < 4; ++direction) {
+        moveScores[direction] = {direction, calculateMoveHeuristic(board, direction)};
+    }
+
+    // 按启发式评分从高到低排序
+    std::sort(moveScores.begin(), moveScores.end(), [](std::pair<int, int> const& a, std::pair<int, int> const& b) {
+        return a.second > b.second;
+    });
+
+    // 存储所有有效移动
+    QVector<int> validMoves;
+
+    // 尝试所有可能的移动（按排序后的顺序）
+    for (auto const& [direction, heuristic] : moveScores) {
+        // 如果启发式评分很低，说明这个移动无效，跳过
+        if (heuristic == -1000000) {
+            continue;
+        }
+
         BitBoard boardCopy = board;
         int moveScore      = 0;
 
-        bool moved = simulateMoveBitBoard(boardCopy, move, moveScore);
+        bool moved = simulateMoveBitBoard(boardCopy, direction, moveScore);
 
         if (moved) {
-            // 计算此移动的分数
-            int score = moveScore + expectimaxBitBoard(boardCopy, 3, false);
+            // 记录有效移动
+            validMoves.append(direction);
+
+            // 计算此移动的分数 - 使用带剪枝的算法
+            int score = moveScore + expectimaxBitBoardWithPruning(boardCopy, 3, false);
 
             if (score > bestScore) {
                 bestScore = score;
-                bestMove  = move;
+                bestMove  = direction;
             }
         }
     }
 
     // 如果没有有效移动，随机选择一个方向
     if (bestMove == -1) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, 3);
-        bestMove = dis(gen);
+        if (!validMoves.isEmpty()) {
+            // 如果有有效移动，随机选择一个
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<> dis(0, validMoves.size() - 1);
+            bestMove = validMoves[dis(gen)];
+        } else {
+            // 如果没有有效移动，随机选择一个方向
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<> dis(0, 3);
+            bestMove = dis(gen);
+        }
     }
 
     return bestMove;
@@ -1087,30 +1239,19 @@ int Auto::getBestMoveBitBoard(QVector<QVector<int>> const& boardState) {
 
 // expectimax: 期望最大算法 - 高效版本
 int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool isMaxPlayer) {
-    // 检查缓存
-    BoardState state{boardState, depth, isMaxPlayer};
-    auto cacheIt = expectimaxCache.find(state);
-    if (cacheIt != expectimaxCache.end()) {
-        return cacheIt->second;
-    }
-
     // 绝对深度限制 - 防止过深递归
     static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
-    if (depth > MAX_ABSOLUTE_DEPTH) {
-        depth = MAX_ABSOLUTE_DEPTH;
-    }
+    depth                               = std::min(depth, MAX_ABSOLUTE_DEPTH);
 
     // 如果到达最大深度，返回评估分数
     if (depth <= 0) {
-        int score              = evaluateAdvancedPattern(boardState);
-        expectimaxCache[state] = score;  // 缓存结果
+        int score = evaluateAdvancedPattern(boardState);
         return score;
     }
 
     // 检测游戏是否结束
     if (isGameOver(boardState)) {
-        int score              = -500000;  // 游戏结束给予大量惩罚
-        expectimaxCache[state] = score;
+        int score = -500000;  // 游戏结束给予大量惩罚
         return score;
     }
 
@@ -1119,23 +1260,32 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
     int emptyCount = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-            }
+            maxValue = std::max(maxValue, boardState[i][j]);
             if (boardState[i][j] == 0) {
                 emptyCount++;
             }
         }
     }
 
-    // 对于高级棋盘，减少搜索深度以提高性能
+    // 根据棋盘状态动态调整搜索深度
     int extraDepth = 0;
-    if (maxValue >= 2048) {
-        // 对于高级棋盘，根据空格数量动态调整搜索深度
-        if (emptyCount <= 4) {
-            depth = std::min(depth, 3);  // 空格很少时限制深度
-        } else {
-            extraDepth = 1;  // 空格较多时增加深度
+
+    // 根据空格数量调整搜索深度
+    if (emptyCount <= 4) {
+        // 空格很少，需要更深的搜索
+        extraDepth = 2;
+    } else if (emptyCount <= 8) {
+        // 空格适中，需要中等深度的搜索
+        extraDepth = 1;
+    }
+
+    // 最大值越大，表示棋盘状态越复杂，需要更深的搜索
+    if (maxValue >= 2048) {  // 2048 = 2^11 或更大
+        extraDepth += 1;
+
+        // 对于更高级的棋盘，再增加搜索深度
+        if (maxValue >= 4096) {  // 4096 = 2^12
+            extraDepth += 1;
         }
     }
 
@@ -1163,16 +1313,12 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
         // CHANCE节点：随机生成新方块
         // 如果没有空格，返回评估分数
         if (emptyCount == 0) {
-            int score              = evaluateBoardAdvanced(boardState);
-            expectimaxCache[state] = score;
+            int score = evaluateBoardAdvanced(boardState);
             return score;
         }
 
-        // 优化：对于高级棋盘，只模拟一个空格以提高性能
-        int tilesToSimulate = 1;
-        if (maxValue < 2048 && emptyCount > 1) {
-            tilesToSimulate = std::min(2, emptyCount);
-        }
+        // 始终模拟多个空格，保持算法一致性
+        int tilesToSimulate = std::min(3, emptyCount);
 
         double totalScore = 0.0;
 
@@ -1200,28 +1346,16 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
             QVector<QVector<int>> boardWith2 = boardState;
             boardWith2[row][col]             = 2;
 
-            // 优化：对于高级棋盘，只考虑生成2的情况
-            if (maxValue >= 4096) {
-                totalScore += expectimax(boardWith2, depth - 1, true);
-            } else {
-                QVector<QVector<int>> boardWith4 = boardState;
-                boardWith4[row][col]             = 4;
+            // 始终考虑生成2和4的情况，保持算法一致性
+            QVector<QVector<int>> boardWith4 = boardState;
+            boardWith4[row][col]             = 4;
 
-                totalScore += 0.9 * expectimax(boardWith2, depth - 1, true);  // 90%概率生成2
-                totalScore += 0.1 * expectimax(boardWith4, depth - 1, true);  // 10%概率生成4
-            }
+            // 90%概率生成2，10%概率生成4
+            totalScore += 0.9 * expectimax(boardWith2, depth - 1 + extraDepth, true);
+            totalScore += 0.1 * expectimax(boardWith4, depth - 1 + extraDepth, true);
         }
 
         result = static_cast<int>(totalScore / tilesToSimulate);
-    }
-
-    // 缓存结果
-    expectimaxCache[state] = result;
-
-    // 限制缓存大小以防止内存溢出
-    if (expectimaxCache.size() > 10000) {
-        // 当缓存过大时清除
-        expectimaxCache.clear();
     }
 
     return result;
@@ -1256,10 +1390,10 @@ int Auto::evaluateWithParams(QVector<QVector<int>> const& boardState, QVector<do
     int maxRow = 0, maxCol = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-                maxRow   = i;
-                maxCol   = j;
+            maxValue = std::max(maxValue, boardState[i][j]);
+            if (boardState[i][j] == maxValue) {
+                maxRow = i;
+                maxCol = j;
             }
         }
     }
@@ -1352,7 +1486,7 @@ int Auto::evaluateWithParams(QVector<QVector<int>> const& boardState, QVector<do
 
     // 6. 角落奖励 - 如果最大值在角落，给予额外奖励
     if ((maxRow == 0 || maxRow == 3) && (maxCol == 0 || maxCol == 3)) {
-        score += static_cast<int>(maxValue * 2);
+        score += maxValue * 2;
     }
 
     return score;
