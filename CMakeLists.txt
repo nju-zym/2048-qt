@@ -19,9 +19,6 @@ set(PROJECT_SOURCES
         mainwindow.ui
         auto.cpp
         auto.h
-        auto_bitboard.cpp
-        bitboard_tables.h
-        bitboard_tables.cpp
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

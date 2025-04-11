@@ -769,90 +769,17 @@ void Auto::initTables() {
         return;
     }
 
-    // 初始化移动表
-    for (int row = 0; row < 65536; ++row) {
-        // 左移表
-        uint16_t line[4] = {static_cast<uint16_t>((row >> 0) & 0xF),
-                            static_cast<uint16_t>((row >> 4) & 0xF),
-                            static_cast<uint16_t>((row >> 8) & 0xF),
-                            static_cast<uint16_t>((row >> 12) & 0xF)};
-
-        // 模拟左移
-        uint16_t result = 0;
-        int score       = 0;
-        bool merged     = false;
-
-        // 先将所有非零元素移动到最左边
-        for (int i = 0; i < 4; ++i) {
-            if (line[i] == 0) {
-                continue;
-            }
-
-            // 找到最左边的空位置
-            int j = i;
-            while (j > 0 && line[j - 1] == 0) {
-                line[j - 1] = line[j];
-                line[j]     = 0;
-                j--;
-                merged = true;
-            }
-
-            // 如果可以合并
-            if (j > 0 && line[j - 1] == line[j] && line[j] != 0) {
-                line[j - 1]++;  // 对数增加1，相当于值翻倍
-                line[j]  = 0;
-                score   += (1 << line[j - 1]);  // 计算分数
-                merged   = true;
-            }
-        }
-
-        // 将结果打包回16位整数
-        result = static_cast<uint16_t>(line[0] | (line[1] << 4) | (line[2] << 8) | (line[3] << 12));
-
-        // 存储到移动表中
-        row_left_table[row] = result;
-
-        // 右移可以通过左移的逆操作实现
-        uint16_t rev_row     = reverse_row(row);
-        uint16_t rev_result  = reverse_row(row_left_table[rev_row]);
-        row_right_table[row] = rev_result;
-
-        // 上移和下移可以通过转置实现
-        BitBoard row_col   = unpack_col(static_cast<uint16_t>(row));
-        BitBoard row_left  = unpack_col(row_left_table[row]);
-        BitBoard row_right = unpack_col(row_right_table[row]);
-
-        col_up_table[row]   = transpose(row_left);
-        col_down_table[row] = transpose(row_right);
-
-        // 计算评分表
-        float heur_score = 0.0f;
-        float tile_score = 0.0f;
-
-        // 计算每个位置的分数
-        for (int i = 0; i < 4; ++i) {
-            int tile_value = line[i];
-            if (tile_value > 0) {
-                // 使用对数值作为分数
-                tile_score += (1 << tile_value);
-
-                // 奖励递减排列
-                if (i > 0 && line[i - 1] > line[i]) {
-                    heur_score += (line[i - 1] - line[i]) * 0.5f;
-                }
-            }
-        }
-
-        heur_score_table[row] = heur_score;
-        score_table[row]      = tile_score;
-    }
+    // 表已经在BitBoardTables.cpp中预先计算好了，不需要在运行时计算
+    // 直接使用预编译的表
 
     // 标记表已初始化
     tablesInitialized.store(true);
 
     // 在主线程中输出调试信息
     QMetaObject::invokeMethod(
-        QApplication::instance(), []() { qDebug() << "BitBoard tables initialized"; }, Qt::QueuedConnection);
+        QApplication::instance(),
+        []() { qDebug() << "BitBoard tables loaded from precompiled data"; },
+        Qt::QueuedConnection);
 }
 
 // 将标准棋盘转换为位棋盘
