@@ -131,25 +131,74 @@ void MainWindow::on_aiButton_clicked() {
 
             int depth = dialog.getDepth();
 
-            if (dialog.getAIType() == 0) {
-                // 创建Expectimax AI实例
-                ai = new ExpectimaxAI(depth, this);
-            } else {
-                // 创建并行Expectimax AI实例
-                ParallelExpectimaxAI* parallelAI = new ParallelExpectimaxAI(depth, dialog.getThreadCount(), this);
+            switch (dialog.getAIType()) {
+                case 0: {
+                    // 创建Expectimax AI实例
+                    ai = new ExpectimaxAI(depth, this);
+                    break;
+                }
+                case 1: {
+                    // 创建并行Expectimax AI实例
+                    ParallelExpectimaxAI* parallelAI = new ParallelExpectimaxAI(depth, dialog.getThreadCount(), this);
 
-                // 设置高级配置
-                parallelAI->setUseAlphaBeta(dialog.getUseAlphaBeta());
-                parallelAI->setUseCache(dialog.getUseCache());
-                parallelAI->setCacheSize(dialog.getCacheSize());
-                parallelAI->setUseEnhancedEval(dialog.getUseEnhancedEval());
+                    // 设置高级配置
+                    parallelAI->setUseAlphaBeta(dialog.getUseAlphaBeta());
+                    parallelAI->setUseCache(dialog.getUseCache());
+                    parallelAI->setCacheSize(dialog.getCacheSize());
+                    parallelAI->setUseEnhancedEval(dialog.getUseEnhancedEval());
 
-                // 设置动态深度调整
-                parallelAI->setUseDynamicDepth(dialog.getUseDynamicDepth());
-                parallelAI->setMinDepth(dialog.getMinDepth());
-                parallelAI->setMaxDepth(dialog.getMaxDepth());
+                    // 设置动态深度调整
+                    parallelAI->setUseDynamicDepth(dialog.getUseDynamicDepth());
+                    parallelAI->setMinDepth(dialog.getMinDepth());
+                    parallelAI->setMaxDepth(dialog.getMaxDepth());
 
-                ai = parallelAI;
+                    ai = parallelAI;
+                    break;
+                }
+                case 2: {
+                    // 创建MCTS AI实例
+                    HybridAI* mctsAI = new HybridAI(this);
+
+                    // 设置MCTS权重为100%
+                    mctsAI->setMCTSWeight(1.0f);
+                    mctsAI->setExpectimaxWeight(0.0f);
+
+                    // 设置线程数和时间限制
+                    mctsAI->setThreadCount(dialog.getThreadCount());
+                    mctsAI->setTimeLimit(dialog.getMCTSTimeLimit());
+
+                    // 设置缓存
+                    mctsAI->setUseCache(dialog.getUseCache());
+                    mctsAI->setCacheSize(dialog.getCacheSize());
+
+                    ai = mctsAI;
+                    break;
+                }
+                case 3: {
+                    // 创建混合策略AI实例
+                    HybridAI* hybridAI = new HybridAI(this);
+
+                    // 设置MCTS和Expectimax权重
+                    float mctsWeight       = dialog.getMCTSWeight() / 100.0f;
+                    float expectimaxWeight = dialog.getExpectimaxWeight() / 100.0f;
+                    hybridAI->setMCTSWeight(mctsWeight);
+                    hybridAI->setExpectimaxWeight(expectimaxWeight);
+
+                    // 设置线程数和时间限制
+                    hybridAI->setThreadCount(dialog.getThreadCount());
+                    hybridAI->setTimeLimit(dialog.getMCTSTimeLimit());
+
+                    // 设置缓存
+                    hybridAI->setUseCache(dialog.getUseCache());
+                    hybridAI->setCacheSize(dialog.getCacheSize());
+
+                    ai = hybridAI;
+                    break;
+                }
+                default:
+                    // 默认使用Expectimax AI
+                    ai = new ExpectimaxAI(depth, this);
+                    break;
             }
 
             if (ai) {

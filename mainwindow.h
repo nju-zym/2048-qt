@@ -3,6 +3,7 @@
 
 #include "ai/BitBoardInitializer.h"
 #include "ai/ExpectimaxAI.h"
+#include "ai/HybridAI.h"
 #include "ai/ParallelExpectimaxAI.h"
 #include "ui/GameView.h"
 #include "utils/GameController.h"

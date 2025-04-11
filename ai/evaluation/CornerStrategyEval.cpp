@@ -1,261 +1,128 @@
 #include "CornerStrategyEval.h"
-#include <cmath>
+
 #include <algorithm>
+#include <cmath>
 
-float CornerStrategyEval::evaluate(const BitBoard& board) {
-    // 组合多个策略评估
-    float snakeScore = calculateSnakePattern(board);
-    float cornerScore = calculateCornerWeight(board);
+float CornerStrategyEval::evaluate(BitBoard const& board) {
+    // 简化评估，只使用角落权重和梯度权重
+    float cornerScore   = calculateCornerWeight(board);
     float gradientScore = calculateGradientWeight(board);
-    
-    // 加权组合
-    return snakeScore * 1.5f + cornerScore * 2.0f + gradientScore * 1.0f;
+
+    // 加权组合，增加角落权重
+    return cornerScore * 3.0f + gradientScore * 1.5f;
 }
 
-float CornerStrategyEval::calculateSnakePattern(const BitBoard& board) {
+float CornerStrategyEval::calculateCornerWeight(BitBoard const& board) {
     float score = 0.0f;
-    
-    // 检查四个可能的蛇形模式（从四个角落开始）
-    
-    // 1. 从左上角开始的蛇形
-    {
-        // 理想的蛇形路径
-        const int path[16][2] = {
-            {0, 0}, {0, 1}, {0, 2}, {0, 3},
-            {1, 3}, {1, 2}, {1, 1}, {1, 0},
-            {2, 0}, {2, 1}, {2, 2}, {2, 3},
-            {3, 3}, {3, 2}, {3, 1}, {3, 0}
-        };
-        
-        float pathScore = 0.0f;
-        int prevValue = 0;
-        
-        for (int i = 0; i < 16; ++i) {
-            int row = path[i][0];
-            int col = path[i][1];
-            int value = board.getTile(row, col);
-            
-            if (value == 0) continue;
-            
-            // 如果当前值大于前一个值，则不符合蛇形模式
-            if (prevValue > 0 && value > prevValue) {
-                pathScore -= std::log2(value) * 0.5f;
-            } else {
-                pathScore += std::log2(value);
-                prevValue = value;
+
+    // 获取棋盘上的最大值
+    uint32_t maxTile = 0;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            if (board.getTile(row, col) > maxTile) {
+                maxTile = board.getTile(row, col);
             }
         }
-        
-        score = std::max(score, pathScore);
     }
-    
-    // 2. 从右上角开始的蛇形
-    {
-        const int path[16][2] = {
-            {0, 3}, {0, 2}, {0, 1}, {0, 0},
-            {1, 0}, {1, 1}, {1, 2}, {1, 3},
-            {2, 3}, {2, 2}, {2, 1}, {2, 0},
-            {3, 0}, {3, 1}, {3, 2}, {3, 3}
-        };
-        
-        float pathScore = 0.0f;
-        int prevValue = 0;
-        
-        for (int i = 0; i < 16; ++i) {
-            int row = path[i][0];
-            int col = path[i][1];
-            int value = board.getTile(row, col);
-            
-            if (value == 0) continue;
-            
-            if (prevValue > 0 && value > prevValue) {
-                pathScore -= std::log2(value) * 0.5f;
-            } else {
-                pathScore += std::log2(value);
-                prevValue = value;
+
+    // 左上角策略（主要策略）
+    uint32_t topLeft = board.getTile(0, 0);
+    if (topLeft > 0) {
+        // 如果最大值在左上角，给予很高的奖励
+        if (topLeft == maxTile) {
+            score += static_cast<float>(std::log2(topLeft)) * 5.0f;
+        } else {
+            score += static_cast<float>(std::log2(topLeft)) * 3.0f;
+        }
+
+        // 检查相邻方块是否形成递减序列
+        uint32_t right = board.getTile(0, 1);
+        uint32_t down  = board.getTile(1, 0);
+
+        // 如果右边的方块小于左上角，给予奖励
+        if (right > 0 && right < topLeft) {
+            score += static_cast<float>(std::log2(right)) * 2.0f;
+
+            // 检查是否连续递减
+            uint32_t rightRight = board.getTile(0, 2);
+            if (rightRight > 0 && rightRight < right) {
+                score += static_cast<float>(std::log2(rightRight)) * 1.5f;
             }
         }
-        
-        score = std::max(score, pathScore);
-    }
-    
-    // 3. 从左下角开始的蛇形
-    {
-        const int path[16][2] = {
-            {3, 0}, {3, 1}, {3, 2}, {3, 3},
-            {2, 3}, {2, 2}, {2, 1}, {2, 0},
-            {1, 0}, {1, 1}, {1, 2}, {1, 3},
-            {0, 3}, {0, 2}, {0, 1}, {0, 0}
-        };
-        
-        float pathScore = 0.0f;
-        int prevValue = 0;
-        
-        for (int i = 0; i < 16; ++i) {
-            int row = path[i][0];
-            int col = path[i][1];
-            int value = board.getTile(row, col);
-            
-            if (value == 0) continue;
-            
-            if (prevValue > 0 && value > prevValue) {
-                pathScore -= std::log2(value) * 0.5f;
-            } else {
-                pathScore += std::log2(value);
-                prevValue = value;
+
+        // 如果下边的方块小于左上角，给予奖励
+        if (down > 0 && down < topLeft) {
+            score += static_cast<float>(std::log2(down)) * 2.0f;
+
+            // 检查是否连续递减
+            uint32_t downDown = board.getTile(2, 0);
+            if (downDown > 0 && downDown < down) {
+                score += static_cast<float>(std::log2(downDown)) * 1.5f;
             }
         }
-        
-        score = std::max(score, pathScore);
     }
-    
-    // 4. 从右下角开始的蛇形
-    {
-        const int path[16][2] = {
-            {3, 3}, {3, 2}, {3, 1}, {3, 0},
-            {2, 0}, {2, 1}, {2, 2}, {2, 3},
-            {1, 3}, {1, 2}, {1, 1}, {1, 0},
-            {0, 0}, {0, 1}, {0, 2}, {0, 3}
-        };
-        
-        float pathScore = 0.0f;
-        int prevValue = 0;
-        
-        for (int i = 0; i < 16; ++i) {
-            int row = path[i][0];
-            int col = path[i][1];
-            int value = board.getTile(row, col);
-            
-            if (value == 0) continue;
-            
-            if (prevValue > 0 && value > prevValue) {
-                pathScore -= std::log2(value) * 0.5f;
-            } else {
-                pathScore += std::log2(value);
-                prevValue = value;
+
+    // 其他角落策略（次要策略）
+    uint32_t topRight    = board.getTile(0, 3);
+    uint32_t bottomLeft  = board.getTile(3, 0);
+    uint32_t bottomRight = board.getTile(3, 3);
+
+    // 如果其他角落有大值，也给予一定的奖励，但低于左上角
+    if (topRight > 0) {
+        if (topRight == maxTile) {
+            score += static_cast<float>(std::log2(topRight)) * 2.5f;
+        } else {
+            score += static_cast<float>(std::log2(topRight)) * 1.5f;
+        }
+    }
+
+    if (bottomLeft > 0) {
+        if (bottomLeft == maxTile) {
+            score += static_cast<float>(std::log2(bottomLeft)) * 2.5f;
+        } else {
+            score += static_cast<float>(std::log2(bottomLeft)) * 1.5f;
+        }
+    }
+
+    if (bottomRight > 0) {
+        if (bottomRight == maxTile) {
+            score += static_cast<float>(std::log2(bottomRight)) * 2.0f;
+        } else {
+            score += static_cast<float>(std::log2(bottomRight)) * 1.0f;
+        }
+    }
+
+    // 惩罚中间的大数字
+    for (int row = 1; row < 3; ++row) {
+        for (int col = 1; col < 3; ++col) {
+            uint32_t value = board.getTile(row, col);
+            if (value > 0) {
+                // 中间的大数字会被惩罚
+                if (value >= maxTile / 2) {
+                    score -= static_cast<float>(std::log2(value)) * 2.0f;
+                }
             }
         }
-        
-        score = std::max(score, pathScore);
     }
-    
+
     return score;
 }
 
-float CornerStrategyEval::calculateCornerWeight(const BitBoard& board) {
-    float score = 0.0f;
-    
-    // 检查四个角落
-    int cornerValues[4] = {
-        board.getTile(0, 0),  // 左上
-        board.getTile(0, 3),  // 右上
-        board.getTile(3, 0),  // 左下
-        board.getTile(3, 3)   // 右下
-    };
-    
-    // 找出最大的角落值
-    int maxCornerValue = 0;
-    int maxCornerIndex = -1;
-    
-    for (int i = 0; i < 4; ++i) {
-        if (cornerValues[i] > maxCornerValue) {
-            maxCornerValue = cornerValues[i];
-            maxCornerIndex = i;
-        }
-    }
-    
-    // 如果有角落有值，给予奖励
-    if (maxCornerValue > 0) {
-        // 最大值在角落，给予额外奖励
-        score += std::log2(maxCornerValue) * 2.0f;
-        
-        // 根据最大角落的位置，检查相邻方块是否形成递减序列
-        if (maxCornerIndex == 0) {  // 左上角
-            int right = board.getTile(0, 1);
-            int down = board.getTile(1, 0);
-            
-            if (right > 0 && right < maxCornerValue) {
-                score += std::log2(right);
-            }
-            
-            if (down > 0 && down < maxCornerValue) {
-                score += std::log2(down);
-            }
-        } else if (maxCornerIndex == 1) {  // 右上角
-            int left = board.getTile(0, 2);
-            int down = board.getTile(1, 3);
-            
-            if (left > 0 && left < maxCornerValue) {
-                score += std::log2(left);
-            }
-            
-            if (down > 0 && down < maxCornerValue) {
-                score += std::log2(down);
-            }
-        } else if (maxCornerIndex == 2) {  // 左下角
-            int right = board.getTile(3, 1);
-            int up = board.getTile(2, 0);
-            
-            if (right > 0 && right < maxCornerValue) {
-                score += std::log2(right);
-            }
-            
-            if (up > 0 && up < maxCornerValue) {
-                score += std::log2(up);
-            }
-        } else if (maxCornerIndex == 3) {  // 右下角
-            int left = board.getTile(3, 2);
-            int up = board.getTile(2, 3);
-            
-            if (left > 0 && left < maxCornerValue) {
-                score += std::log2(left);
-            }
-            
-            if (up > 0 && up < maxCornerValue) {
-                score += std::log2(up);
-            }
-        }
-    }
-    
-    return score;
-}
-
-float CornerStrategyEval::calculateGradientWeight(const BitBoard& board) {
+float CornerStrategyEval::calculateGradientWeight(BitBoard const& board) {
     // 定义四个角落的梯度权重矩阵
-    const float gradientWeights[4][4][4] = {
-        // 左上角梯度
-        {
-            {4.0f, 3.0f, 2.0f, 1.0f},
-            {3.0f, 2.0f, 1.0f, 0.0f},
-            {2.0f, 1.0f, 0.0f, -1.0f},
-            {1.0f, 0.0f, -1.0f, -2.0f}
-        },
-        // 右上角梯度
-        {
-            {1.0f, 2.0f, 3.0f, 4.0f},
-            {0.0f, 1.0f, 2.0f, 3.0f},
-            {-1.0f, 0.0f, 1.0f, 2.0f},
-            {-2.0f, -1.0f, 0.0f, 1.0f}
-        },
-        // 左下角梯度
-        {
-            {1.0f, 0.0f, -1.0f, -2.0f},
-            {2.0f, 1.0f, 0.0f, -1.0f},
-            {3.0f, 2.0f, 1.0f, 0.0f},
-            {4.0f, 3.0f, 2.0f, 1.0f}
-        },
-        // 右下角梯度
-        {
-            {-2.0f, -1.0f, 0.0f, 1.0f},
-            {-1.0f, 0.0f, 1.0f, 2.0f},
-            {0.0f, 1.0f, 2.0f, 3.0f},
-            {1.0f, 2.0f, 3.0f, 4.0f}
-        }
-    };
-    
+    float const gradientWeights[4][4][4]
+        = {// 左上角梯度
+           {{4.0f, 3.0f, 2.0f, 1.0f}, {3.0f, 2.0f, 1.0f, 0.0f}, {2.0f, 1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f, -2.0f}},
+           // 右上角梯度
+           {{1.0f, 2.0f, 3.0f, 4.0f}, {0.0f, 1.0f, 2.0f, 3.0f}, {-1.0f, 0.0f, 1.0f, 2.0f}, {-2.0f, -1.0f, 0.0f, 1.0f}},
+           // 左下角梯度
+           {{1.0f, 0.0f, -1.0f, -2.0f}, {2.0f, 1.0f, 0.0f, -1.0f}, {3.0f, 2.0f, 1.0f, 0.0f}, {4.0f, 3.0f, 2.0f, 1.0f}},
+           // 右下角梯度
+           {{-2.0f, -1.0f, 0.0f, 1.0f}, {-1.0f, 0.0f, 1.0f, 2.0f}, {0.0f, 1.0f, 2.0f, 3.0f}, {1.0f, 2.0f, 3.0f, 4.0f}}};
+
     // 计算每个角落的梯度分数
     float gradientScores[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    
+
     for (int corner = 0; corner < 4; ++corner) {
         for (int row = 0; row < 4; ++row) {
             for (int col = 0; col < 4; ++col) {
@@ -266,7 +133,7 @@ float CornerStrategyEval::calculateGradientWeight(const BitBoard& board) {
             }
         }
     }
-    
+
     // 返回最高的梯度分数
     return *std::max_element(gradientScores, gradientScores + 4);
 }

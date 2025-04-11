@@ -272,8 +272,10 @@ void GameController::startAI(AIInterface* aiInstance) {
 
     qDebug() << "GameController: AI started:" << ai->getName();
 
-    // 启动AI定时器，每3000毫秒执行一次
-    aiTimer->start(3000);
+    // 启动AI定时器，每2000毫秒执行一次
+    // 对于MCTS算法，需要足够的时间
+    // 但也不能太长，否则用户体验差
+    aiTimer->start(2000);
     aiRunning = true;
 
     // 更新状态

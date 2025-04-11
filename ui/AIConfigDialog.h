@@ -26,7 +26,7 @@ class AIConfigDialog : public QDialog {
 
     /**
      * @brief 获取AI类型
-     * @return AI类型（0=单线程, 1=多线程）
+     * @return AI类型（0=单线程Expectimax, 1=多线程Expectimax, 2=MCTS, 3=混合策略）
      */
     int getAIType() const;
 
@@ -84,6 +84,30 @@ class AIConfigDialog : public QDialog {
      */
     int getMaxDepth() const;
 
+    /**
+     * @brief 获取MCTS模拟次数限制
+     * @return MCTS模拟次数限制
+     */
+    int getMCTSSimulationLimit() const;
+
+    /**
+     * @brief 获取MCTS时间限制
+     * @return MCTS时间限制（毫秒）
+     */
+    int getMCTSTimeLimit() const;
+
+    /**
+     * @brief 获取MCTS权重
+     * @return MCTS权重（0-100）
+     */
+    int getMCTSWeight() const;
+
+    /**
+     * @brief 获取Expectimax权重
+     * @return Expectimax权重（0-100）
+     */
+    int getExpectimaxWeight() const;
+
    private slots:
     /**
      * @brief 当AI类型改变时调用
@@ -102,6 +126,10 @@ class AIConfigDialog : public QDialog {
     QCheckBox* useDynamicDepthCheckBox;
     QSpinBox* minDepthSpinBox;
     QSpinBox* maxDepthSpinBox;
+    QSpinBox* mctsSimulationLimitSpinBox;
+    QSpinBox* mctsTimeLimitSpinBox;
+    QSpinBox* mctsWeightSpinBox;
+    QSpinBox* expectimaxWeightSpinBox;
     QPushButton* okButton;
     QPushButton* cancelButton;
 };

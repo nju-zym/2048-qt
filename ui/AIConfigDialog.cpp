@@ -4,6 +4,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QStackedWidget>
 #include <QThread>
 #include <QVBoxLayout>
 
@@ -15,6 +16,8 @@ AIConfigDialog::AIConfigDialog(QWidget* parent) : QDialog(parent) {
     aiTypeComboBox = new QComboBox(this);
     aiTypeComboBox->addItem("Expectimax AI (单线程)");
     aiTypeComboBox->addItem("并行Expectimax AI (多线程)");
+    aiTypeComboBox->addItem("蒙特卡洛树搜索 (MCTS)");
+    aiTypeComboBox->addItem("混合策略 (Expectimax + MCTS)");
 
     depthSpinBox = new QSpinBox(this);
     depthSpinBox->setRange(1, 10);
@@ -58,6 +61,30 @@ AIConfigDialog::AIConfigDialog(QWidget* parent) : QDialog(parent) {
     maxDepthSpinBox->setValue(5);
     maxDepthSpinBox->setToolTip("最大搜索深度，当棋盘状态复杂时使用");
 
+    // MCTS相关控件
+    mctsSimulationLimitSpinBox = new QSpinBox(this);
+    mctsSimulationLimitSpinBox->setRange(1000, 1000000);
+    mctsSimulationLimitSpinBox->setValue(10000);
+    mctsSimulationLimitSpinBox->setSingleStep(1000);
+    mctsSimulationLimitSpinBox->setToolTip("模拟次数越多，AI越强，但计算时间也越长");
+
+    mctsTimeLimitSpinBox = new QSpinBox(this);
+    mctsTimeLimitSpinBox->setRange(10, 10000);
+    mctsTimeLimitSpinBox->setValue(100);
+    mctsTimeLimitSpinBox->setSingleStep(10);
+    mctsTimeLimitSpinBox->setToolTip("搜索时间限制（毫秒），越长越精确，但响应越慢");
+
+    // 混合策略相关控件
+    mctsWeightSpinBox = new QSpinBox(this);
+    mctsWeightSpinBox->setRange(0, 100);
+    mctsWeightSpinBox->setValue(50);
+    mctsWeightSpinBox->setToolTip("MCTS算法的权重（0-100）");
+
+    expectimaxWeightSpinBox = new QSpinBox(this);
+    expectimaxWeightSpinBox->setRange(0, 100);
+    expectimaxWeightSpinBox->setValue(50);
+    expectimaxWeightSpinBox->setToolTip("Expectimax算法的权重（0-100）");
+
     okButton     = new QPushButton("确定", this);
     cancelButton = new QPushButton("取消", this);
 
@@ -66,15 +93,57 @@ AIConfigDialog::AIConfigDialog(QWidget* parent) : QDialog(parent) {
 
     QFormLayout* formLayout = new QFormLayout();
     formLayout->addRow("AI类型:", aiTypeComboBox);
-    formLayout->addRow("搜索深度:", depthSpinBox);
-    formLayout->addRow("线程数量:", threadCountSpinBox);
-    formLayout->addRow(useAlphaBetaCheckBox);
-    formLayout->addRow(useCacheCheckBox);
-    formLayout->addRow("缓存大小:", cacheSizeSpinBox);
-    formLayout->addRow(useEnhancedEvalCheckBox);
-    formLayout->addRow(useDynamicDepthCheckBox);
-    formLayout->addRow("最小搜索深度:", minDepthSpinBox);
-    formLayout->addRow("最大搜索深度:", maxDepthSpinBox);
+
+    // Expectimax相关控件
+    QWidget* expectimaxWidget     = new QWidget(this);
+    QFormLayout* expectimaxLayout = new QFormLayout(expectimaxWidget);
+    expectimaxLayout->setContentsMargins(0, 0, 0, 0);
+    expectimaxLayout->addRow("搜索深度:", depthSpinBox);
+    expectimaxLayout->addRow("线程数量:", threadCountSpinBox);
+    expectimaxLayout->addRow(useAlphaBetaCheckBox);
+    expectimaxLayout->addRow(useCacheCheckBox);
+    expectimaxLayout->addRow("缓存大小:", cacheSizeSpinBox);
+    expectimaxLayout->addRow(useEnhancedEvalCheckBox);
+    expectimaxLayout->addRow(useDynamicDepthCheckBox);
+    expectimaxLayout->addRow("最小搜索深度:", minDepthSpinBox);
+    expectimaxLayout->addRow("最大搜索深度:", maxDepthSpinBox);
+
+    // MCTS相关控件
+    QWidget* mctsWidget     = new QWidget(this);
+    QFormLayout* mctsLayout = new QFormLayout(mctsWidget);
+    mctsLayout->setContentsMargins(0, 0, 0, 0);
+    mctsLayout->addRow("线程数量:", threadCountSpinBox);
+    mctsLayout->addRow("模拟次数限制:", mctsSimulationLimitSpinBox);
+    mctsLayout->addRow("搜索时间限制(毫秒):", mctsTimeLimitSpinBox);
+    mctsLayout->addRow(useCacheCheckBox);
+    mctsLayout->addRow("缓存大小:", cacheSizeSpinBox);
+
+    // 添加说明标签
+    QLabel* mctsInfoLabel = new QLabel("纯粹MCTS模式，不使用Expectimax算法", this);
+    mctsInfoLabel->setStyleSheet("color: blue; font-style: italic;");
+    mctsLayout->addRow(mctsInfoLabel);
+
+    // 混合策略相关控件
+    QWidget* hybridWidget     = new QWidget(this);
+    QFormLayout* hybridLayout = new QFormLayout(hybridWidget);
+    hybridLayout->setContentsMargins(0, 0, 0, 0);
+    hybridLayout->addRow("线程数量:", threadCountSpinBox);
+    hybridLayout->addRow("MCTS权重:", mctsWeightSpinBox);
+    hybridLayout->addRow("Expectimax权重:", expectimaxWeightSpinBox);
+    hybridLayout->addRow("搜索时间限制(毫秒):", mctsTimeLimitSpinBox);
+    hybridLayout->addRow("Expectimax搜索深度:", depthSpinBox);
+    hybridLayout->addRow(useCacheCheckBox);
+    hybridLayout->addRow("缓存大小:", cacheSizeSpinBox);
+
+    // 创建堆叠小部件
+    QStackedWidget* stackedWidget = new QStackedWidget(this);
+    stackedWidget->addWidget(expectimaxWidget);  // 索引 0: 单线程Expectimax
+    stackedWidget->addWidget(expectimaxWidget);  // 索引 1: 多线程Expectimax
+    stackedWidget->addWidget(mctsWidget);        // 索引 2: MCTS
+    stackedWidget->addWidget(hybridWidget);      // 索引 3: 混合策略
+
+    // 添加到主表单
+    formLayout->addRow("", stackedWidget);
 
     QHBoxLayout* buttonLayout = new QHBoxLayout();
     buttonLayout->addStretch();
@@ -90,13 +159,28 @@ AIConfigDialog::AIConfigDialog(QWidget* parent) : QDialog(parent) {
     connect(okButton, &QPushButton::clicked, this, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
 
-    // 初始化UI状态
+    // 初始化显示状态
     onAITypeChanged(aiTypeComboBox->currentIndex());
 }
 
 void AIConfigDialog::onAITypeChanged(int index) {
-    // 如果选择单线程AI，禁用线程数量设置
-    threadCountSpinBox->setEnabled(index == 1);
+    // 获取堆叠小部件
+    QStackedWidget* stackedWidget = findChild<QStackedWidget*>();
+    if (!stackedWidget) {
+        return;
+    }
+
+    // 切换到对应的页面
+    stackedWidget->setCurrentIndex(index);
+
+    // 根据AI类型设置控件状态
+    if (index == 0) {
+        // 单线程Expectimax
+        threadCountSpinBox->setEnabled(false);
+    } else {
+        // 多线程Expectimax、MCTS、混合策略
+        threadCountSpinBox->setEnabled(true);
+    }
 }
 
 int AIConfigDialog::getAIType() const {
@@ -137,4 +221,20 @@ int AIConfigDialog::getMinDepth() const {
 
 int AIConfigDialog::getMaxDepth() const {
     return maxDepthSpinBox->value();
+}
+
+int AIConfigDialog::getMCTSSimulationLimit() const {
+    return mctsSimulationLimitSpinBox->value();
+}
+
+int AIConfigDialog::getMCTSTimeLimit() const {
+    return mctsTimeLimitSpinBox->value();
+}
+
+int AIConfigDialog::getMCTSWeight() const {
+    return mctsWeightSpinBox->value();
+}
+
+int AIConfigDialog::getExpectimaxWeight() const {
+    return expectimaxWeightSpinBox->value();
 }

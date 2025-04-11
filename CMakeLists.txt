@@ -69,6 +69,14 @@ set(AI_SOURCES
         ai/ParallelExpectimaxAI.h
         ai/ParallelExpectimaxWorker.cpp
         ai/ParallelExpectimaxWorker.h
+        ai/MCTSNode.cpp
+        ai/MCTSNode.h
+        ai/MCTSWorker.cpp
+        ai/MCTSWorker.h
+        ai/HybridWorker.cpp
+        ai/HybridWorker.h
+        ai/HybridAI.cpp
+        ai/HybridAI.h
         ai/evaluation/MonotonicityEval.cpp
         ai/evaluation/MonotonicityEval.h
         ai/evaluation/SmoothnessEval.cpp

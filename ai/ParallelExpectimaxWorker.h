@@ -122,6 +122,18 @@ class ParallelExpectimaxWorker : public QObject {
      */
     int getThreadCount() const;
 
+    /**
+     * @brief 设置是否使用动态深度调整
+     * @param useDynamicDepth 是否使用动态深度调整
+     */
+    void setUseDynamicDepth(bool useDynamicDepth);
+
+    /**
+     * @brief 获取是否使用动态深度调整
+     * @return 是否使用动态深度调整
+     */
+    bool getUseDynamicDepth() const;
+
    signals:
     /**
      * @brief 当计算出最佳移动时发出的信号
@@ -144,29 +156,49 @@ class ParallelExpectimaxWorker : public QObject {
     bool useAlphaBeta    = true;
     bool useCache        = true;
     bool useEnhancedEval = true;
-    size_t cacheSize     = 1000000;
+    bool useDynamicDepth = true;      // 是否使用动态深度调整
+    bool useWorkStealing = true;      // 是否使用工作窃取
+    size_t cacheSize     = 10000000;  // 增加缓存大小从1M到10M
+    size_t batchSize     = 0;         // 批处理大小，0表示自动计算
 
     // 缓存
     struct CacheKey {
         uint64_t boardHash;
         int depth;
         bool isMaximizingPlayer;
+        float alpha;  // 添加Alpha值
+        float beta;   // 添加Beta值
 
         bool operator==(CacheKey const& other) const {
             return boardHash == other.boardHash && depth == other.depth
-                   && isMaximizingPlayer == other.isMaximizingPlayer;
+                   && isMaximizingPlayer == other.isMaximizingPlayer && alpha == other.alpha && beta == other.beta;
         }
     };
 
     struct CacheKeyHash {
         std::size_t operator()(CacheKey const& key) const {
-            return key.boardHash ^ (key.depth << 1) ^ key.isMaximizingPlayer;
+            // 使用更好的哈希函数
+            std::size_t h1 = std::hash<uint64_t>{}(key.boardHash);
+            std::size_t h2 = std::hash<int>{}(key.depth);
+            std::size_t h3 = std::hash<bool>{}(key.isMaximizingPlayer);
+
+            // 组合哈希值
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
         }
     };
 
+    // 缓存条目
+    struct CacheEntry {
+        float value;           // 缓存的值
+        uint32_t accessCount;  // 访问计数
+        uint32_t generation;   // 世代标记
+    };
+
     // 缓存相关变量
-    std::unordered_map<CacheKey, float, CacheKeyHash> cache;
+    std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> cache;
+    uint32_t currentGeneration = 0;  // 当前缓存世代
     QMutex cacheMutex;
+    QReadWriteLock cacheRWLock;  // 缓存读写锁，减少锁竞争
 
     // Future watchers
     QFutureWatcher<DirectionScore> upWatcher;
@@ -174,15 +206,15 @@ class ParallelExpectimaxWorker : public QObject {
     QFutureWatcher<DirectionScore> downWatcher;
     QFutureWatcher<DirectionScore> leftWatcher;
 
-    // 评估函数权重
-    static constexpr float MONOTONICITY_WEIGHT             = 1.0F;
-    static constexpr float SMOOTHNESS_WEIGHT               = 0.1F;
-    static constexpr float FREE_TILES_WEIGHT               = 2.7F;
-    static constexpr float MERGE_WEIGHT                    = 1.0F;
-    static constexpr float TILE_PLACEMENT_WEIGHT           = 1.0F;
-    static constexpr float CORNER_STRATEGY_WEIGHT          = 2.0F;
-    static constexpr float LARGE_NUMBERS_CONNECTION_WEIGHT = 1.5F;
-    static constexpr float RISK_WEIGHT                     = 1.2F;
+    // 评估函数权重 - 优化后的权重
+    static constexpr float MONOTONICITY_WEIGHT             = 5.0F;  // 进一步增加单调性权重，这是2048最重要的策略
+    static constexpr float SMOOTHNESS_WEIGHT               = 0.5F;  // 增加平滑性权重，有助于合并
+    static constexpr float FREE_TILES_WEIGHT               = 3.0F;  // 增加空位权重，避免棋盘填满
+    static constexpr float MERGE_WEIGHT                    = 2.0F;  // 增加合并权重，鼓励合并操作
+    static constexpr float TILE_PLACEMENT_WEIGHT           = 2.0F;  // 增加方块位置权重，鼓励大数字在角落
+    static constexpr float CORNER_STRATEGY_WEIGHT          = 5.0F;  // 进一步增加角落策略权重，这是高分的关键
+    static constexpr float LARGE_NUMBERS_CONNECTION_WEIGHT = 4.0F;  // 增加大数字连接权重，有助于形成更大的数字
+    static constexpr float RISK_WEIGHT                     = 3.0F;  // 增加风险评估权重，避免危险局面
 
     /**
      * @brief 线程主函数
@@ -224,6 +256,35 @@ class ParallelExpectimaxWorker : public QObject {
      * @return 评估分数
      */
     float evaluateBoard(BitBoard const& board) const;
+
+    /**
+     * @brief 预热缓存，提前计算常见棋面
+     */
+    void preheateCache();
+
+    /**
+     * @brief 设置是否使用工作窃取
+     * @param useWorkStealing 是否使用工作窃取
+     */
+    void setUseWorkStealing(bool useWorkStealing);
+
+    /**
+     * @brief 获取是否使用工作窃取
+     * @return 是否使用工作窃取
+     */
+    bool getUseWorkStealing() const;
+
+    /**
+     * @brief 设置批处理大小
+     * @param batchSize 批处理大小
+     */
+    void setBatchSize(size_t batchSize);
+
+    /**
+     * @brief 获取批处理大小
+     * @return 批处理大小
+     */
+    size_t getBatchSize() const;
 };
 
 #endif  // PARALLEL_EXPECTIMAX_WORKER_H
