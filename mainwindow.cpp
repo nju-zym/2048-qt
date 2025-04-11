@@ -1212,5 +1212,3 @@ void MainWindow::onAiCalculationTimeout() {
         }
     }
 }
-
-
