@@ -39,8 +39,7 @@ class MainWindow : public QMainWindow {
     void on_undoButton_clicked();
     void on_settingsButton_clicked();
     void on_autoPlayButton_clicked();
-    void on_learnButton_clicked();
-    void on_resetAIButton_clicked();
+
     void autoPlayStep();
     void onAiCalculationFinished();
     void onAiCalculationTimeout();
