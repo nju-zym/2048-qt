@@ -1,6 +1,8 @@
 #ifndef AUTO_H
 #define AUTO_H
 
+#include "bitboard_tables.h"
+
 #include <QApplication>
 #include <QDateTime>
 #include <QFile>
@@ -21,9 +23,6 @@
 #include <functional>
 #include <random>
 #include <unordered_map>
-
-// 位棋盘类型定义
-typedef uint64_t BitBoard;
 
 // 位棋盘状态结构体
 struct BitBoardState {
@@ -49,8 +48,6 @@ struct hash<BitBoardState> {
 };
 }  // namespace std
 
-// 训练相关功能已移除
-
 class Auto : public QObject {
     Q_OBJECT
 
@@ -69,40 +66,21 @@ class Auto : public QObject {
     [[nodiscard]] bool getUseLearnedParams() const;
     [[nodiscard]] QVector<double> getStrategyParams() const;
 
-    // 训练相关功能已移除
-
     // 主要功能
     int findBestMove(QVector<QVector<int>> const& board);
-    // 训练相关方法已移除
 
     // 初始化位棋盘表格 - 公开方法供其他类调用
     void initTables();
 
-    // 保存和加载参数
-    bool saveParameters(QString const& filename = "");
-    bool savePersistentData(QJsonDocument const& doc);
-    bool loadParameters(QString const& filename = "");
-    bool loadPersistentData();
-    bool processJsonData(QByteArray const& data);
-
-    // 重置历史最佳分数
-    void resetBestHistoricalScore();
-
-    // 训练进度相关功能已移除
-
     // 缓存相关
     void clearExpectimaxCache();  // 清除缓存
-
-    // 友元类声明已移除
 
    private:
     // 策略参数
     QVector<double> strategyParams;
-    QVector<double> defaultParams;  // 默认参数，当不使用学习参数时使用
+    QVector<double> defaultParams;  // 默认参数
     bool useLearnedParams;
-    int bestHistoricalScore;  // 历史最佳分数
 
-    // 训练进度相关字段已移除
     QMutex mutex;
 
     // 缓存相关
@@ -161,9 +139,6 @@ class Auto : public QObject {
     int evaluateAdvancedPattern(QVector<QVector<int>> const& boardState);
     static double calculateMergeScore(QVector<QVector<int>> const& boardState);
 
-    // 数据目录路径
-    QString getDataDirPath() const;
-
     // 位操作相关函数
     BitBoard convertToBitBoard(QVector<QVector<int>> const& boardState);
     QVector<QVector<int>> convertFromBitBoard(BitBoard board);
@@ -177,10 +152,7 @@ class Auto : public QObject {
 
     // 模拟和搜索
     bool simulateMove(QVector<QVector<int>>& boardState, int direction, int& score);
-    int monteCarloSimulation(QVector<QVector<int>> const& boardState, int depth);
     int expectimax(QVector<QVector<int>> const& boardState, int depth, bool isMaxPlayer);
-
-    // 遗传算法相关方法已移除
 };
 
 #endif  // AUTO_H
