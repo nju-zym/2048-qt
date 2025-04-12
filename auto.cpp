@@ -19,11 +19,11 @@ Auto::Auto()
       useLearnedParams(false),
       bestHistoricalScore(0) {  // 初始化历史最佳分数为0
     // 初始化默认参数为经过测试的有效值
-    defaultParams[0] = 2.0;  // 空格数量权重
-    defaultParams[1] = 2.0;  // 蛇形模式权重
-    defaultParams[2] = 0.5;  // 平滑度权重
-    defaultParams[3] = 4.5;  // 单调性权重
-    defaultParams[4] = 1.0;  // 合并可能性权重
+    defaultParams[0] = 3.0;  // 空格数量权重
+    defaultParams[1] = 2.5;  // 蛇形模式权重
+    defaultParams[2] = 0.2;  // 平滑度权重
+    defaultParams[3] = 4.0;  // 单调性权重
+    defaultParams[4] = 0.8;  // 合并可能性权重
 
     // 初始化随机数生成器
     srand(time(nullptr));
@@ -56,13 +56,11 @@ int Auto::findBestMove(QVector<QVector<int>> const& board) {
         // 如果这个方向可以移动，计算移动后的棋盘评分
         if (moved) {
             int score = 0;
-
-            // 无论是否使用学习参数，都使用相同的评估方法，只是参数不同
             // 先进行基础评估 - 始终使用高级评估函数，包括处理大于2048的情况
             score = evaluateAdvancedPattern(boardCopy) + moveScore;
 
-            // 使用expectimax算法进行深度为3的搜索
-            int simulationScore  = expectimax(boardCopy, 3, false);
+            // 使用expectimax算法进行深度为5的搜索
+            int simulationScore  = expectimax(boardCopy, 5, false);
             score               += simulationScore;
 
             if (score > bestScore) {
@@ -166,24 +164,10 @@ double Auto::calculateMergeScore(QVector<QVector<int>> const& boardState) {
     return mergeScore;
 }
 
-// 高级模式评估 - 专门处理超过2048的复杂情况
+// 高级模式评估
 int Auto::evaluateAdvancedPattern(QVector<QVector<int>> const& boardState) {
     int score    = 0;
     int maxValue = 0;
-
-    // 找出最大值
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-            }
-        }
-    }
-
-    // 如果最大值小于2048，使用普通评估函数
-    if (maxValue < 2048) {
-        return evaluateBoardAdvanced(boardState);
-    }
 
     // 1. 蛇形模式权重矩阵 - 为了处理高级棋盘状态
     // 定义蛇形路径的权重矩阵，从左上角开始蛇形形式排列
@@ -299,164 +283,6 @@ int Auto::evaluateAdvancedPattern(QVector<QVector<int>> const& boardState) {
     return score;
 }
 
-// evaluateBoardAdvanced: 高级评估棋盘状态
-int Auto::evaluateBoardAdvanced(QVector<QVector<int>> const& boardState) {
-    int score = 0;
-
-    // 1. 空格数量权重 - 空格越多越好
-    int emptyCount = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] == 0) {
-                emptyCount++;
-            }
-        }
-    }
-    // 空格数量的权重与棋盘填充程度相关，棋盘越满空格越重要
-    score += emptyCount * (16 - emptyCount) * defaultParams[0];  // 使用空格数量权重参数
-
-    // 2. 角落策略 - 使用权重矩阵
-    // 定义权重矩阵，优先将大数放在角落，特别是左上角
-    int const weightMatrix[4][4] = {{16, 15, 14, 13}, {9, 10, 11, 12}, {8, 7, 6, 5}, {1, 2, 3, 4}};
-
-    // 计算权重得分
-    int weightScore = 0;
-    int maxValue    = 0;
-
-    // 找出最大值
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            if (boardState[i][j] > maxValue) {
-                maxValue = boardState[i][j];
-            }
-            // 根据权重矩阵计算得分
-            if (boardState[i][j] > 0) {
-                weightScore += boardState[i][j] * weightMatrix[i][j];
-            }
-        }
-    }
-
-    // 奖励角落有高分数方块
-    if (boardState[0][0] == maxValue) {
-        weightScore += maxValue * 4;  // 左上角最高分
-    }
-    // 如果最大值在任意角落，也给予奖励
-    else if (boardState[0][3] == maxValue || boardState[3][0] == maxValue || boardState[3][3] == maxValue) {
-        weightScore += maxValue * 2;
-    }
-
-    score += weightScore * defaultParams[1];  // 使用蛇形模式权重参数
-
-    // 3. 平滑度权重 - 相邻方块数值差异越小越好
-    int smoothness = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j + 1] > 0) {
-                // 使用对数差异来减少大数值之间的差异惩罚
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i][j + 1] > 0 ? log2(boardState[i][j + 1]) : 0;
-                smoothness     -= abs(logVal1 - logVal2) * 2.0;
-            }
-        }
-    }
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i + 1][j] > 0) {
-                // 使用对数差异
-                double logVal1  = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-                double logVal2  = boardState[i + 1][j] > 0 ? log2(boardState[i + 1][j]) : 0;
-                smoothness     -= abs(logVal1 - logVal2) * 2.0;
-            }
-        }
-    }
-    score += smoothness * defaultParams[2];  // 使用平滑度权重参数
-
-    // 4. 单调性权重 - 方块数值沿某个方向单调递增或递减
-    double monotonicity = 0;
-
-    // 检查行的单调性 - 使用对数值
-    for (int i = 0; i < 4; ++i) {
-        double current     = 0;
-        double left_score  = 0;
-        double right_score = 0;
-
-        for (int j = 0; j < 4; ++j) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            if (value > 0) {
-                // 计算左向单调性
-                if (current > value) {
-                    left_score += current - value;
-                } else {
-                    right_score += value - current;
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(left_score, right_score);
-    }
-
-    // 检查列的单调性 - 使用对数值
-    for (int j = 0; j < 4; ++j) {
-        double current    = 0;
-        double up_score   = 0;
-        double down_score = 0;
-
-        for (int i = 0; i < 4; ++i) {
-            double value = boardState[i][j] > 0 ? log2(boardState[i][j]) : 0;
-            if (value > 0) {
-                // 计算上向单调性
-                if (current > value) {
-                    up_score += current - value;
-                } else {
-                    down_score += value - current;
-                }
-                current = value;
-            }
-        }
-        monotonicity += std::min(up_score, down_score);
-    }
-
-    score -= monotonicity * defaultParams[3];  // 使用单调性权重参数，单调性是负分，越小越好
-
-    // 5. 合并可能性 - 奖励相邻相同值
-    int mergeScore = 0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i][j + 1]) {
-                mergeScore += boardState[i][j];
-            }
-        }
-    }
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            if (boardState[i][j] > 0 && boardState[i][j] == boardState[i + 1][j]) {
-                mergeScore += boardState[i][j];
-            }
-        }
-    }
-    score += mergeScore * defaultParams[4];  // 使用合并可能性权重参数
-
-    // 6. 大数值聚集 - 奖励大数值聚集在一起
-    int clusterScore = 0;
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            int cellValue = boardState[i][j];
-            if (cellValue > 0) {
-                // 检查右边和下边的方块
-                if (boardState[i][j + 1] > 0) {
-                    clusterScore += std::min(cellValue, boardState[i][j + 1]);
-                }
-                if (boardState[i + 1][j] > 0) {
-                    clusterScore += std::min(cellValue, boardState[i + 1][j]);
-                }
-            }
-        }
-    }
-    score += clusterScore;
-
-    return score;
-}
-
 // simulateMove: 模拟移动
 bool Auto::simulateMove(QVector<QVector<int>>& boardState, int direction, int& score) {
     bool moved = false;
@@ -562,7 +388,7 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
     }
 
     // 绝对深度限制 - 防止过深递归
-    static int const MAX_ABSOLUTE_DEPTH = 5;  // 降低最大深度以提高性能
+    static int const MAX_ABSOLUTE_DEPTH = 12;
     if (depth > MAX_ABSOLUTE_DEPTH) {
         depth = MAX_ABSOLUTE_DEPTH;
     }
@@ -600,7 +426,7 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
     if (maxValue >= 2048) {
         // 对于高级棋盘，根据空格数量动态调整搜索深度
         if (emptyCount <= 4) {
-            depth = std::min(depth, 3);  // 空格很少时限制深度
+            depth = std::min(depth, 5);  // 空格很少时限制深度
         } else {
             extraDepth = 1;  // 空格较多时增加深度
         }
@@ -635,13 +461,8 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
             return score;
         }
 
-        // 优化：对于高级棋盘，只模拟一个空格以提高性能
         int tilesToSimulate = 1;
-        if (maxValue < 2048 && emptyCount > 1) {
-            tilesToSimulate = std::min(2, emptyCount);
-        }
-
-        double totalScore = 0.0;
+        double totalScore   = 0.0;
 
         // 优化空格选择策略
         QVector<QPair<int, int>> emptyPositions;
@@ -667,16 +488,11 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
             QVector<QVector<int>> boardWith2 = boardState;
             boardWith2[row][col]             = 2;
 
-            // 优化：对于高级棋盘，只考虑生成2的情况
-            if (maxValue >= 4096) {
-                totalScore += expectimax(boardWith2, depth - 1, true);
-            } else {
-                QVector<QVector<int>> boardWith4 = boardState;
-                boardWith4[row][col]             = 4;
+            QVector<QVector<int>> boardWith4 = boardState;
+            boardWith4[row][col]             = 4;
 
-                totalScore += 0.9 * expectimax(boardWith2, depth - 1, true);  // 90%概率生成2
-                totalScore += 0.1 * expectimax(boardWith4, depth - 1, true);  // 10%概率生成4
-            }
+            totalScore += 0.9 * expectimax(boardWith2, depth - 1, true);  // 90%概率生成2
+            totalScore += 0.1 * expectimax(boardWith4, depth - 1, true);  // 10%概率生成4
         }
 
         result = static_cast<int>(totalScore / tilesToSimulate);
@@ -686,7 +502,7 @@ int Auto::expectimax(QVector<QVector<int>> const& boardState, int depth, bool is
     expectimaxCache[state] = result;
 
     // 限制缓存大小以防止内存溢出
-    if (expectimaxCache.size() > 10000) {
+    if (expectimaxCache.size() > 500000) {
         // 当缓存过大时清除
         expectimaxCache.clear();
     }

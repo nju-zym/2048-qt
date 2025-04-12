@@ -85,7 +85,6 @@ class Auto : public QObject {
     std::unordered_map<BoardState, int, BoardStateHash> expectimaxCache;
 
     // 评估函数
-    int evaluateBoardAdvanced(QVector<QVector<int>> const& boardState);
     int evaluateAdvancedPattern(QVector<QVector<int>> const& boardState);
     static double calculateMergeScore(QVector<QVector<int>> const& boardState);
 
