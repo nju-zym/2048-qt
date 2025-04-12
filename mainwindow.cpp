@@ -864,6 +864,9 @@ void MainWindow::showGameOverMessage() {
 
 // showWinMessage: 弹出游戏胜利提示，并询问是否继续游戏
 void MainWindow::showWinMessage() {
+    // 设置标识为true，确保只弹出一次
+    winAlertShown = true;
+
     QMessageBox msgBox;
     msgBox.setText("You Win!");
     msgBox.setInformativeText("Do you want to continue playing?");
@@ -873,8 +876,6 @@ void MainWindow::showWinMessage() {
     if (msgBox.exec() == QMessageBox::No) {
         startNewGame();
     } else {
-        // 如果选择继续游戏，将标识设置为true，后续操作不再提示
-        winAlertShown = true;
         updateStatus("Keep going to get a higher score!");
     }
 }
