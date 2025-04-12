@@ -12,13 +12,52 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
+# 添加include目录，以便各模块之间可以相互包含
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ai)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/game)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ui)
+
+# 定义核心模块源文件
+set(CORE_SOURCES
+    core/GameBoard.h
+    core/GameBoard.cpp
+)
+
+# 定义AI模块源文件
+set(AI_SOURCES
+    ai/BoardEvaluator.h
+    ai/BoardEvaluator.cpp
+    ai/AICache.h
+    ai/AICache.cpp
+    ai/AISearch.h
+    ai/AISearch.cpp
+    ai/auto.h
+    ai/auto.cpp
+)
+
+# 定义游戏控制模块源文件
+set(GAME_SOURCES
+    game/GameController.h
+    game/GameController.cpp
+)
+
+# 定义UI模块源文件
+set(UI_SOURCES
+    ui/UIManager.h
+    ui/UIManager.cpp
+)
+
 set(PROJECT_SOURCES
         main.cpp
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
-        auto.cpp
-        auto.h
+        ${CORE_SOURCES}
+        ${AI_SOURCES}
+        ${GAME_SOURCES}
+        ${UI_SOURCES}
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

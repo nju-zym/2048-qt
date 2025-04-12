@@ -1,22 +1,12 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include "auto.h"
+#include "game/GameController.h"
+#include "ui/UIManager.h"
 
-#include <QFuture>
 #include <QKeyEvent>
-#include <QLabel>
 #include <QMainWindow>
-#include <QMutex>
-#include <QPair>
-#include <QPropertyAnimation>
-#include <QPushButton>
-#include <QThread>
-#include <QTimer>
-#include <QVector>
-#include <QWaitCondition>
-
-#include <QtConcurrent/QtConcurrent>
+#include <QMessageBox>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -28,75 +18,40 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
    public:
-    MainWindow(QWidget* parent = nullptr);
-    ~MainWindow();
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
 
    protected:
     void keyPressEvent(QKeyEvent* event) override;
 
    private slots:
+    // 按钮事件
     void on_newGameButton_clicked();
     void on_undoButton_clicked();
     void on_settingsButton_clicked();
     void on_autoPlayButton_clicked();
 
-    void autoPlayStep();
-    void onAiCalculationFinished();
-    void onAiCalculationTimeout();
+    // 游戏事件处理
+    void handleScoreUpdate(int newScore);
+    void handleTileAdded(int row, int col, int value, bool animate);
+    void handleTileMoved(int fromRow, int fromCol, int toRow, int toCol, int value, bool merged);
+    void handleGameOver();
+    void handleGameWon();
+    void handleStatusUpdate(QString const& message);
+    void handleBoardUpdate();
 
    private:
     Ui::MainWindow* ui;
 
-    // 游戏数据
-    QVector<QVector<int>> board;
-    QVector<QVector<QLabel*>> tileLabels;
-    int score;
-    int bestScore;
-    QVector<QPair<QVector<QVector<int>>, int>> history;  // 用于撤销操作，存储棋盘状态和分数
-    bool animationInProgress;                            // 标记动画是否正在进行
-    int pendingAnimations;                               // 跟踪当前正在进行的动画数量
+    // 游戏控制器
+    GameController* gameController;
 
-    // 自动操作相关
-    QTimer* autoPlayTimer;  // 自动操作定时器
-    bool autoPlayActive;    // 标记自动操作是否激活
-    Auto* autoPlayer;       // 自动操作类实例
+    // UI管理器
+    UIManager* uiManager;
 
-    // AI线程相关
-    QFuture<int> aiFuture;   // 用于异步计算最佳移动
-    bool aiCalculating;      // 标记AI是否正在计算
-    QMutex aiMutex;          // 用于保护AI计算状态
-    int aiCalculatedMove;    // 存储计算出的最佳移动
-    QTimer* aiTimeoutTimer;  // 超时定时器，防止AI计算时间过长
-
-    // 初始化函数
-    void setupBoard();
-    void initializeTiles();
-    void startNewGame();
-
-    // 游戏逻辑
-    bool moveTiles(int direction);  // 0=up, 1=right, 2=down, 3=left
-    void generateNewTile(bool animate = true);
-    bool isMoveAvailable() const;
-    bool isGameOver() const;
-    bool isGameWon() const;
-    bool isTileEmpty(int row, int col) const;        // 检查格子是否为空
-    QVector<QPair<int, int>> getEmptyTiles() const;  // 获取所有空格子
-
-    // 自动操作相关
-    int findBestMove();         // 找出最佳移动方向
-    void startAiCalculation();  // 开始异步AI计算
-
-    // UI更新
-    void updateTileAppearance(int row, int col);
-    void updateScore(int newScore);
-    void updateStatus(QString const& message);
-    QString getTileStyleSheet(int value) const;
+    // 辅助函数
     void showGameOverMessage();
     void showWinMessage();
-
-    // 动画
-    void animateTileMovement(QLabel* label, QPoint const& from, QPoint const& to);
-    void animateTileMerge(QLabel* label);
 };
 
 #endif  // MAINWINDOW_H
